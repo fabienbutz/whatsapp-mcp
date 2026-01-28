@@ -2,14 +2,14 @@
 
 ## Completed
 
-### v1.0 - Core Features
+### v0.8 - Core Features
 - [x] QR Code authentication with display in Claude
 - [x] Send/receive text messages
 - [x] Contact management and search
 - [x] Message history and search
 - [x] Session persistence (.wwebjs_auth)
 
-### v1.1 - Media & Transcription
+### v0.9 - Media & Transcription
 - [x] Download media from messages (images, videos, audio, documents)
 - [x] Send images (URL or base64)
 - [x] Send documents/files
@@ -19,7 +19,7 @@
 
 ## In Progress
 
-### v1.2 - Enhanced Media
+### v0.10 - Enhanced Media
 - [ ] Send videos
 - [ ] Send audio files
 - [ ] Send stickers
@@ -30,35 +30,41 @@
 
 ## Planned
 
-### v1.3 - Group Features
+### v0.11 - Group Features
 - [ ] Create groups
 - [ ] Add/remove group participants
 - [ ] Group admin functions
 - [ ] List group members
 - [ ] Group settings (name, description, photo)
 
-### v1.4 - Advanced Messaging
+### v0.12 - Advanced Messaging
 - [ ] Message reactions (emoji)
 - [ ] Edit sent messages
 - [ ] Delete messages
 - [ ] Pin/unpin messages
 - [ ] Mark messages as read/unread
 
-### v1.5 - Status & Presence
+### v1.0 - Stable Release
+- [ ] All core features stable
+- [ ] Comprehensive error handling
+- [ ] Full documentation
+- [ ] Test coverage
+
+### v1.1 - Status & Presence
 - [ ] View contact status updates (Stories)
 - [ ] Post status updates
 - [ ] Online/offline presence detection
 - [ ] "Last seen" information
 - [ ] Typing indicators
 
-### v1.6 - Business Features
+### v1.2 - Business Features
 - [ ] WhatsApp Business API support
 - [ ] Quick replies / Templates
 - [ ] Labels for chats
 - [ ] Catalog integration
 - [ ] Automated responses
 
-### v1.7 - Multi-Device & Sync
+### v1.3 - Multi-Device & Sync
 - [ ] Multi-account support
 - [ ] Cross-device message sync
 - [ ] Backup/restore conversations
