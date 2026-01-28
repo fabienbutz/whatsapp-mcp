@@ -950,6 +950,62 @@ class WhatsAppClientWrapper {
     }
   }
 
+  async reconnect(): Promise<{ success: boolean; message: string }> {
+    log('Reconnecting WhatsApp client...');
+
+    // Kill any hanging browser processes first
+    try {
+      const { exec } = await import('child_process');
+      await new Promise<void>((resolve) => {
+        exec('pkill -f "Google Chrome for Testing" 2>/dev/null || true', () => resolve());
+      });
+      log('Killed any hanging Chrome processes');
+    } catch (err) {
+      // Ignore errors
+    }
+
+    // Destroy current client (keeps auth data)
+    if (this.client) {
+      try {
+        await this.client.destroy();
+      } catch (err) {
+        log('Error destroying client during reconnect:', err);
+      }
+      this.client = null;
+    }
+
+    // Reset state but keep contacts cache
+    this.isReady = false;
+    this.readyPollingStarted = false;
+    this.authReceived = false;
+    this.qrCode = null;
+
+    // Wait a moment for cleanup
+    await new Promise(resolve => setTimeout(resolve, 2000));
+
+    // Reinitialize
+    try {
+      await this.initialize();
+
+      // Wait for ready state (max 30 seconds)
+      const startTime = Date.now();
+      while (!this.isReady && Date.now() - startTime < 30000) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+
+      if (this.isReady) {
+        return { success: true, message: 'Reconnected successfully!' };
+      } else if (this.qrCode) {
+        return { success: false, message: 'QR code scan required. Use whatsapp_get_qr_code.' };
+      } else {
+        return { success: false, message: 'Reconnect timed out. Try whatsapp_reset_auth.' };
+      }
+    } catch (err: any) {
+      log('Reconnect failed:', err?.message || err);
+      return { success: false, message: `Reconnect failed: ${err?.message || 'Unknown error'}` };
+    }
+  }
+
   async requestHistorySync(): Promise<void> {
     // In whatsapp-web.js, we use fetchMessages instead
     log('History sync requested. Use fetchMessages for on-demand loading.');

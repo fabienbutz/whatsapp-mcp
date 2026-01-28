@@ -198,6 +198,15 @@ const tools: Tool[] = [
     }
   },
   {
+    name: 'whatsapp_reconnect',
+    description: 'Reconnect WhatsApp if the browser crashed or connection was lost. Keeps existing auth session. Use this before reset_auth.',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+      required: []
+    }
+  },
+  {
     name: 'whatsapp_reset_auth',
     description: 'Reset WhatsApp authentication. Use this to force a new QR code scan, which will sync all contacts fresh. Useful when contacts are missing.',
     inputSchema: {
@@ -320,8 +329,8 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         return JSON.stringify({
           status: 'browser_crashed',
           currentDate,
-          message: 'Browser/Puppeteer has crashed or disconnected. The WhatsApp session needs to be restarted.',
-          action: 'Restart Claude Desktop or run whatsapp_reset_auth to reconnect.'
+          message: 'Browser/Puppeteer has crashed or disconnected.',
+          action: 'Run whatsapp_reconnect to restart the browser (keeps auth). If that fails, use whatsapp_reset_auth.'
         });
       } else if (status.qrCode) {
         return JSON.stringify({
@@ -533,6 +542,12 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
       const { limit = 50 } = args as { limit?: number };
       const logs = getLogs(Math.min(limit, 200));
       return JSON.stringify({ entries: logs, total: logs.length });
+    }
+
+    case 'whatsapp_reconnect': {
+      log('TOOL whatsapp_reconnect called');
+      const result = await whatsappClient.reconnect();
+      return JSON.stringify(result);
     }
 
     case 'whatsapp_reset_auth': {
