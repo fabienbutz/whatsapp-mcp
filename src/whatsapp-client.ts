@@ -448,9 +448,28 @@ class WhatsAppClientWrapper {
     }
   }
 
-  getStatus(): { ready: boolean; qrCode: string | null; qrImagePath: string | null; contactCount: number } {
+  async getStatus(): Promise<{ ready: boolean; browserAlive: boolean; qrCode: string | null; qrImagePath: string | null; contactCount: number }> {
+    // Check if browser/puppeteer page is still alive
+    let browserAlive = false;
+    if (this.client && this.isReady) {
+      try {
+        // Try to execute something on the page to verify it's not detached
+        const page = (this.client as any).pupPage;
+        if (page) {
+          await page.evaluate(() => true);
+          browserAlive = true;
+        }
+      } catch (err: any) {
+        log(`Browser health check failed: ${err?.message || err}`);
+        // Browser is dead, mark as not ready
+        this.isReady = false;
+        browserAlive = false;
+      }
+    }
+
     return {
-      ready: this.isReady,
+      ready: this.isReady && browserAlive,
+      browserAlive,
       qrCode: this.qrCode,
       qrImagePath: this.qrImagePath,
       contactCount: this.contacts.size,

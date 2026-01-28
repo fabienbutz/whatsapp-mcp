@@ -303,7 +303,7 @@ const tools: Tool[] = [
 async function handleToolCall(name: string, args: Record<string, unknown>): Promise<string> {
   switch (name) {
     case 'whatsapp_status': {
-      const status = whatsappClient.getStatus();
+      const status = await whatsappClient.getStatus();
       const currentDate = new Date().toISOString().split('T')[0];
       if (status.ready) {
         return JSON.stringify({
@@ -314,6 +314,14 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           hint: status.contactCount === 0
             ? 'Contacts are empty. Use whatsapp_list_contacts to sync them.'
             : undefined
+        });
+      } else if (!status.browserAlive && status.contactCount > 0) {
+        // Browser crashed but we had a connection before
+        return JSON.stringify({
+          status: 'browser_crashed',
+          currentDate,
+          message: 'Browser/Puppeteer has crashed or disconnected. The WhatsApp session needs to be restarted.',
+          action: 'Restart Claude Desktop or run whatsapp_reset_auth to reconnect.'
         });
       } else if (status.qrCode) {
         return JSON.stringify({
@@ -332,7 +340,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
     }
 
     case 'whatsapp_get_qr_code': {
-      const status = whatsappClient.getStatus();
+      const status = await whatsappClient.getStatus();
       if (status.ready) {
         return JSON.stringify({ error: 'WhatsApp is already connected. No QR code needed.' });
       }
@@ -746,7 +754,7 @@ async function main() {
     try {
       // Special handling for QR code - return as image
       if (name === 'whatsapp_get_qr_code') {
-        const status = whatsappClient.getStatus();
+        const status = await whatsappClient.getStatus();
         if (status.ready) {
           return {
             content: [{ type: 'text', text: JSON.stringify({ message: 'WhatsApp is already connected. No QR code needed.' }) }]
