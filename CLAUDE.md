@@ -54,8 +54,49 @@ rm -rf .wwebjs_auth
 |-------------|-------------|
 | `src/whatsapp-client.ts` | WhatsApp Client wrapper (whatsapp-web.js) |
 | `src/index.ts` | MCP Server with tools |
+| `src/transcription.ts` | OpenAI Whisper integration for voice messages |
 | `.wwebjs_auth/` | Puppeteer session data |
 | `contacts.json` | Contacts cache |
+
+## Media & Transcription
+
+### Sending Media
+
+Use `MessageMedia` from whatsapp-web.js with `sendSeen: false`:
+
+```typescript
+const MessageMedia = (await import('whatsapp-web.js')).default.MessageMedia;
+const media = await MessageMedia.fromUrl(imageUrl, { unsafeMime: true });
+await client.sendMessage(jid, media, { sendSeen: false, caption: 'Optional caption' });
+```
+
+### Downloading Media
+
+```typescript
+const media = await message.downloadMedia();
+// media.data = base64 string
+// media.mimetype = 'audio/ogg', 'image/jpeg', etc.
+```
+
+### Voice Message Transcription
+
+Requires `OPENAI_API_KEY` set via:
+1. MCP server config `env` field (recommended)
+2. `.env` file in project root (fallback)
+
+```json
+{
+  "mcpServers": {
+    "whatsapp": {
+      "command": "node",
+      "args": ["/path/to/build/index.js"],
+      "env": {
+        "OPENAI_API_KEY": "sk-..."
+      }
+    }
+  }
+}
+```
 
 ## Troubleshooting
 

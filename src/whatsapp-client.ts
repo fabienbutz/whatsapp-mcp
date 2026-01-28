@@ -68,6 +68,8 @@ interface StoredMessage {
   timestamp: number;
   fromMe: boolean;
   pushName?: string;
+  hasMedia?: boolean;
+  mediaType?: string; // 'image', 'video', 'audio', 'ptt', 'document', 'sticker'
 }
 
 const LOG_BUFFER: string[] = [];
@@ -216,15 +218,30 @@ class WhatsAppClientWrapper {
         this.saveContactsToFile();
       }
 
+      // Determine media type
+      let mediaType: string | undefined;
+      if (msg.hasMedia) {
+        const type = msg.type;
+        if (type === 'image') mediaType = 'image';
+        else if (type === 'video') mediaType = 'video';
+        else if (type === 'audio') mediaType = 'audio';
+        else if (type === 'ptt') mediaType = 'ptt'; // voice message
+        else if (type === 'document') mediaType = 'document';
+        else if (type === 'sticker') mediaType = 'sticker';
+        else mediaType = type;
+      }
+
       // Store the message
       const storedMsg: StoredMessage = {
         id: msg.id._serialized || msg.id.id || '',
         from: chatId,
         to: 'me',
-        body: msg.body || '[Media]',
+        body: msg.body || (msg.hasMedia ? `[${mediaType || 'Media'}]` : ''),
         timestamp: msg.timestamp || Math.floor(Date.now() / 1000),
         fromMe: false,
         pushName: msg._data?.notifyName || undefined,
+        hasMedia: msg.hasMedia || false,
+        mediaType,
       };
 
       const chatMessages = this.messages.get(chatId) || [];
@@ -244,13 +261,28 @@ class WhatsAppClientWrapper {
       const chatId = msg.to;
       if (!chatId) return;
 
+      // Determine media type
+      let mediaType: string | undefined;
+      if (msg.hasMedia) {
+        const type = msg.type;
+        if (type === 'image') mediaType = 'image';
+        else if (type === 'video') mediaType = 'video';
+        else if (type === 'audio') mediaType = 'audio';
+        else if (type === 'ptt') mediaType = 'ptt';
+        else if (type === 'document') mediaType = 'document';
+        else if (type === 'sticker') mediaType = 'sticker';
+        else mediaType = type;
+      }
+
       const storedMsg: StoredMessage = {
         id: msg.id._serialized || msg.id.id || '',
         from: 'me',
         to: chatId,
-        body: msg.body || '[Media]',
+        body: msg.body || (msg.hasMedia ? `[${mediaType || 'Media'}]` : ''),
         timestamp: msg.timestamp || Math.floor(Date.now() / 1000),
         fromMe: true,
+        hasMedia: msg.hasMedia || false,
+        mediaType,
       };
 
       const chatMessages = this.messages.get(chatId) || [];
@@ -531,14 +563,29 @@ class WhatsAppClientWrapper {
       const storedMessages: StoredMessage[] = [];
 
       for (const msg of messages) {
+        // Determine media type
+        let mediaType: string | undefined;
+        if (msg.hasMedia) {
+          const type = msg.type;
+          if (type === 'image') mediaType = 'image';
+          else if (type === 'video') mediaType = 'video';
+          else if (type === 'audio') mediaType = 'audio';
+          else if (type === 'ptt') mediaType = 'ptt';
+          else if (type === 'document') mediaType = 'document';
+          else if (type === 'sticker') mediaType = 'sticker';
+          else mediaType = type;
+        }
+
         const storedMsg: StoredMessage = {
           id: msg.id._serialized || msg.id.id || '',
           from: msg.fromMe ? 'me' : chatId,
           to: msg.fromMe ? chatId : 'me',
-          body: msg.body || '[Media]',
+          body: msg.body || (msg.hasMedia ? `[${mediaType || 'Media'}]` : ''),
           timestamp: msg.timestamp || Math.floor(Date.now() / 1000),
           fromMe: msg.fromMe,
           pushName: (msg as any)._data?.notifyName || undefined,
+          hasMedia: msg.hasMedia || false,
+          mediaType,
         };
 
         storedMessages.push(storedMsg);
@@ -742,6 +789,136 @@ class WhatsAppClientWrapper {
     return results.slice(0, 20); // Max 20 chats
   }
 
+  async downloadMedia(messageId: string, chatId: string): Promise<{ data: string; mimetype: string; filename?: string } | null> {
+    if (!this.client || !this.isReady) {
+      throw new Error('WhatsApp client not ready');
+    }
+
+    try {
+      log(`Downloading media for message ${messageId} in chat ${chatId}`);
+      const chat = await this.client.getChatById(chatId);
+      const messages = await chat.fetchMessages({ limit: 100 });
+
+      const msg = messages.find((m: any) =>
+        (m.id._serialized === messageId || m.id.id === messageId)
+      );
+
+      if (!msg) {
+        log(`Message ${messageId} not found in chat`);
+        return null;
+      }
+
+      if (!msg.hasMedia) {
+        log(`Message ${messageId} has no media`);
+        return null;
+      }
+
+      const media = await msg.downloadMedia();
+      if (!media) {
+        log(`Failed to download media for message ${messageId}`);
+        return null;
+      }
+
+      log(`Downloaded media: ${media.mimetype}, ${media.data.length} bytes`);
+      return {
+        data: media.data,
+        mimetype: media.mimetype,
+        filename: media.filename || undefined,
+      };
+    } catch (err: any) {
+      log(`Error downloading media: ${err?.message || err}`);
+      throw err;
+    }
+  }
+
+  async sendImage(recipient: string, imageData: string, caption?: string, isUrl = false): Promise<SendResult> {
+    if (!this.client || !this.isReady) {
+      throw new Error('WhatsApp client not ready');
+    }
+
+    const jid = this.formatPhoneNumber(recipient);
+    log(`Sending image to ${jid}, caption: ${caption?.substring(0, 30) || 'none'}`);
+
+    try {
+      const MessageMedia = (await import('whatsapp-web.js')).default.MessageMedia;
+      let media: any;
+
+      if (isUrl) {
+        // Download from URL
+        media = await MessageMedia.fromUrl(imageData, { unsafeMime: true });
+      } else {
+        // Base64 data
+        media = new MessageMedia('image/jpeg', imageData);
+      }
+
+      const result = await this.client.sendMessage(jid, media, {
+        sendSeen: false,
+        caption: caption || undefined,
+      });
+
+      log(`Image sent successfully, id: ${result?.id?._serialized || 'unknown'}`);
+      return {
+        success: true,
+        messageId: result?.id?._serialized || undefined,
+      };
+    } catch (err: any) {
+      log(`Failed to send image: ${err?.message || err}`);
+      throw err;
+    }
+  }
+
+  async sendDocument(recipient: string, documentData: string, filename?: string, isUrl = false): Promise<SendResult> {
+    if (!this.client || !this.isReady) {
+      throw new Error('WhatsApp client not ready');
+    }
+
+    const jid = this.formatPhoneNumber(recipient);
+    log(`Sending document to ${jid}, filename: ${filename || 'unknown'}`);
+
+    try {
+      const MessageMedia = (await import('whatsapp-web.js')).default.MessageMedia;
+      let media: any;
+
+      if (isUrl) {
+        media = await MessageMedia.fromUrl(documentData, { unsafeMime: true });
+      } else {
+        // Try to detect mimetype from filename or use default
+        const mimetype = filename?.endsWith('.pdf') ? 'application/pdf'
+          : filename?.endsWith('.docx') ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+          : 'application/octet-stream';
+        media = new MessageMedia(mimetype, documentData, filename);
+      }
+
+      const result = await this.client.sendMessage(jid, media, {
+        sendSeen: false,
+      });
+
+      log(`Document sent successfully, id: ${result?.id?._serialized || 'unknown'}`);
+      return {
+        success: true,
+        messageId: result?.id?._serialized || undefined,
+      };
+    } catch (err: any) {
+      log(`Failed to send document: ${err?.message || err}`);
+      throw err;
+    }
+  }
+
+  async getAudioMessages(chatId: string, limit = 50): Promise<StoredMessage[]> {
+    if (!this.client || !this.isReady) {
+      throw new Error('WhatsApp client not ready');
+    }
+
+    // First fetch messages to ensure we have recent ones
+    await this.fetchMessages(chatId, limit);
+
+    // Filter for audio messages
+    const allMessages = this.messages.get(chatId) || [];
+    return allMessages.filter(m =>
+      m.hasMedia && (m.mediaType === 'audio' || m.mediaType === 'ptt')
+    ).slice(-limit);
+  }
+
   async destroy(): Promise<void> {
     if (this.client) {
       try {
@@ -793,14 +970,29 @@ class WhatsAppClientWrapper {
 
       let newCount = 0;
       for (const msg of messages) {
+        // Determine media type
+        let mediaType: string | undefined;
+        if (msg.hasMedia) {
+          const type = msg.type;
+          if (type === 'image') mediaType = 'image';
+          else if (type === 'video') mediaType = 'video';
+          else if (type === 'audio') mediaType = 'audio';
+          else if (type === 'ptt') mediaType = 'ptt';
+          else if (type === 'document') mediaType = 'document';
+          else if (type === 'sticker') mediaType = 'sticker';
+          else mediaType = type;
+        }
+
         const storedMsg: StoredMessage = {
           id: msg.id._serialized || msg.id.id || '',
           from: msg.fromMe ? 'me' : chatId,
           to: msg.fromMe ? chatId : 'me',
-          body: msg.body || '[Media]',
+          body: msg.body || (msg.hasMedia ? `[${mediaType || 'Media'}]` : ''),
           timestamp: msg.timestamp || Math.floor(Date.now() / 1000),
           fromMe: msg.fromMe,
           pushName: (msg as any)._data?.notifyName || undefined,
+          hasMedia: msg.hasMedia || false,
+          mediaType,
         };
 
         const chatMessages = this.messages.get(chatId) || [];

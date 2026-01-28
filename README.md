@@ -11,6 +11,8 @@ A Model Context Protocol (MCP) server that enables LLMs to interact with WhatsAp
 - **Contact Management**: List and search contacts
 - **Search**: Search for messages across chats
 - **QR Code Display**: View QR code directly in Claude for easy authentication
+- **Media Handling**: Send and receive images, documents, and other media
+- **Voice Transcription**: Transcribe voice messages using OpenAI Whisper
 
 ## Prerequisites
 
@@ -46,11 +48,16 @@ Add this to your Claude Desktop configuration file:
   "mcpServers": {
     "whatsapp": {
       "command": "node",
-      "args": ["/absolute/path/to/whatsapp-mcp/build/index.js"]
+      "args": ["/absolute/path/to/whatsapp-mcp/build/index.js"],
+      "env": {
+        "OPENAI_API_KEY": "sk-your-openai-key-here"
+      }
     }
   }
 }
 ```
+
+> **Note**: The `OPENAI_API_KEY` is optional and only needed for voice message transcription.
 
 ### Other MCP Clients
 
@@ -84,6 +91,10 @@ For other MCP-compatible clients, configure the server with:
 | `whatsapp_sync_history` | Request a history sync |
 | `whatsapp_logs` | View server logs for debugging |
 | `whatsapp_reset_auth` | Reset authentication and scan new QR code |
+| `whatsapp_download_media` | Download media (image, video, audio) from a message |
+| `whatsapp_send_image` | Send an image from URL or base64 data |
+| `whatsapp_send_document` | Send a document/file from URL or base64 data |
+| `whatsapp_transcribe_audio` | Transcribe voice messages using OpenAI Whisper |
 
 ## Usage Examples
 
@@ -95,6 +106,9 @@ Once connected, you can ask Claude things like:
 - "What are the last 10 messages from [name]?"
 - "Search my WhatsApp for messages about 'meeting'"
 - "Check my WhatsApp connection status"
+- "Send this image to John" (with an image URL)
+- "Transcribe the last voice message from [name]"
+- "What did [name] say in their voice message?"
 
 ## Phone Number Format
 

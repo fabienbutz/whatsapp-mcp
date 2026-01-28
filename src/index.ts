@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import 'dotenv/config';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
@@ -8,6 +9,7 @@ import {
   Tool,
 } from '@modelcontextprotocol/sdk/types.js';
 import { whatsappClient, getLogs, log } from './whatsapp-client.js';
+import { transcribeAudio, isTranscriptionAvailable } from './transcription.js';
 
 const tools: Tool[] = [
   {
@@ -201,6 +203,98 @@ const tools: Tool[] = [
     inputSchema: {
       type: 'object',
       properties: {},
+      required: []
+    }
+  },
+  {
+    name: 'whatsapp_download_media',
+    description: 'Download media (image, video, audio, document) from a WhatsApp message. Returns base64 encoded data.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        messageId: {
+          type: 'string',
+          description: 'The ID of the message containing the media'
+        },
+        chatId: {
+          type: 'string',
+          description: 'The chat ID where the message is located (e.g., 4915123456789@c.us)'
+        }
+      },
+      required: ['messageId', 'chatId']
+    }
+  },
+  {
+    name: 'whatsapp_send_image',
+    description: 'Send an image to a WhatsApp contact. Can send from URL or base64 data.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        recipient: {
+          type: 'string',
+          description: 'Phone number in international format (e.g., 4915123456789) or contact name'
+        },
+        imageUrl: {
+          type: 'string',
+          description: 'URL of the image to send (use this OR imageBase64)'
+        },
+        imageBase64: {
+          type: 'string',
+          description: 'Base64 encoded image data (use this OR imageUrl)'
+        },
+        caption: {
+          type: 'string',
+          description: 'Optional caption for the image'
+        }
+      },
+      required: ['recipient']
+    }
+  },
+  {
+    name: 'whatsapp_send_document',
+    description: 'Send a document/file to a WhatsApp contact. Can send from URL or base64 data.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        recipient: {
+          type: 'string',
+          description: 'Phone number in international format (e.g., 4915123456789) or contact name'
+        },
+        documentUrl: {
+          type: 'string',
+          description: 'URL of the document to send (use this OR documentBase64)'
+        },
+        documentBase64: {
+          type: 'string',
+          description: 'Base64 encoded document data (use this OR documentUrl)'
+        },
+        filename: {
+          type: 'string',
+          description: 'Filename for the document (e.g., report.pdf)'
+        }
+      },
+      required: ['recipient']
+    }
+  },
+  {
+    name: 'whatsapp_transcribe_audio',
+    description: 'Transcribe a voice message or audio file from WhatsApp using OpenAI Whisper. Requires OPENAI_API_KEY to be configured.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        messageId: {
+          type: 'string',
+          description: 'The ID of the audio/voice message to transcribe'
+        },
+        chatId: {
+          type: 'string',
+          description: 'The chat ID where the message is located (e.g., 4915123456789@c.us)'
+        },
+        contactName: {
+          type: 'string',
+          description: 'Alternative: Contact name to find the chat (will transcribe the latest audio message)'
+        }
+      },
       required: []
     }
   }
@@ -439,6 +533,189 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         success: true,
         message: 'Authentication reset. Use whatsapp_get_qr_code to scan a new QR code. This will sync all contacts fresh.'
       });
+    }
+
+    case 'whatsapp_download_media': {
+      const { messageId, chatId } = args as { messageId: string; chatId: string };
+      if (!messageId || !chatId) {
+        return JSON.stringify({ error: 'messageId and chatId are required' });
+      }
+      if (!whatsappClient.isClientReady()) {
+        return JSON.stringify({ error: 'WhatsApp is not connected. Check status first.' });
+      }
+
+      try {
+        const media = await whatsappClient.downloadMedia(messageId, chatId);
+        if (!media) {
+          return JSON.stringify({ error: 'Media not found or message has no media' });
+        }
+        return JSON.stringify({
+          success: true,
+          mimetype: media.mimetype,
+          filename: media.filename,
+          dataSize: media.data.length,
+          data: media.data, // base64 encoded
+        });
+      } catch (err: any) {
+        return JSON.stringify({ error: err?.message || 'Failed to download media' });
+      }
+    }
+
+    case 'whatsapp_send_image': {
+      const { recipient, imageUrl, imageBase64, caption } = args as {
+        recipient: string;
+        imageUrl?: string;
+        imageBase64?: string;
+        caption?: string;
+      };
+
+      if (!recipient) {
+        return JSON.stringify({ error: 'recipient is required' });
+      }
+      if (!imageUrl && !imageBase64) {
+        return JSON.stringify({ error: 'Either imageUrl or imageBase64 is required' });
+      }
+      if (!whatsappClient.isClientReady()) {
+        return JSON.stringify({ error: 'WhatsApp is not connected. Check status first.' });
+      }
+
+      try {
+        // Check if recipient is a name or phone number
+        let recipientId = recipient;
+        if (!/^\d+$/.test(recipient.replace(/\D/g, '').slice(0, 5))) {
+          // Looks like a name, try to find contact
+          const contactId = await whatsappClient.findContactByName(recipient);
+          if (contactId) {
+            recipientId = contactId;
+          }
+        }
+
+        const result = await whatsappClient.sendImage(
+          recipientId,
+          imageUrl || imageBase64!,
+          caption,
+          !!imageUrl
+        );
+        return JSON.stringify(result);
+      } catch (err: any) {
+        return JSON.stringify({ error: err?.message || 'Failed to send image' });
+      }
+    }
+
+    case 'whatsapp_send_document': {
+      const { recipient, documentUrl, documentBase64, filename } = args as {
+        recipient: string;
+        documentUrl?: string;
+        documentBase64?: string;
+        filename?: string;
+      };
+
+      if (!recipient) {
+        return JSON.stringify({ error: 'recipient is required' });
+      }
+      if (!documentUrl && !documentBase64) {
+        return JSON.stringify({ error: 'Either documentUrl or documentBase64 is required' });
+      }
+      if (!whatsappClient.isClientReady()) {
+        return JSON.stringify({ error: 'WhatsApp is not connected. Check status first.' });
+      }
+
+      try {
+        // Check if recipient is a name or phone number
+        let recipientId = recipient;
+        if (!/^\d+$/.test(recipient.replace(/\D/g, '').slice(0, 5))) {
+          const contactId = await whatsappClient.findContactByName(recipient);
+          if (contactId) {
+            recipientId = contactId;
+          }
+        }
+
+        const result = await whatsappClient.sendDocument(
+          recipientId,
+          documentUrl || documentBase64!,
+          filename,
+          !!documentUrl
+        );
+        return JSON.stringify(result);
+      } catch (err: any) {
+        return JSON.stringify({ error: err?.message || 'Failed to send document' });
+      }
+    }
+
+    case 'whatsapp_transcribe_audio': {
+      const { messageId, chatId, contactName } = args as {
+        messageId?: string;
+        chatId?: string;
+        contactName?: string;
+      };
+
+      if (!whatsappClient.isClientReady()) {
+        return JSON.stringify({ error: 'WhatsApp is not connected. Check status first.' });
+      }
+
+      if (!isTranscriptionAvailable()) {
+        return JSON.stringify({
+          error: 'Transcription not available. Set OPENAI_API_KEY in your MCP server config or .env file.',
+          hint: 'Add "env": {"OPENAI_API_KEY": "your-key"} to your MCP server configuration.'
+        });
+      }
+
+      try {
+        let targetChatId = chatId;
+        let targetMessageId = messageId;
+
+        // If contact name provided, find the chat and get latest audio
+        if (contactName && !chatId) {
+          const foundChatId = await whatsappClient.findContactByName(contactName);
+          if (!foundChatId) {
+            return JSON.stringify({ error: `Contact "${contactName}" not found` });
+          }
+          targetChatId = foundChatId;
+        }
+
+        if (!targetChatId) {
+          return JSON.stringify({ error: 'Either chatId or contactName is required' });
+        }
+
+        // If no specific message, get the latest audio message
+        if (!targetMessageId) {
+          const audioMessages = await whatsappClient.getAudioMessages(targetChatId, 20);
+          if (audioMessages.length === 0) {
+            return JSON.stringify({ error: 'No audio messages found in this chat' });
+          }
+          // Get the most recent audio message
+          const latestAudio = audioMessages[audioMessages.length - 1];
+          targetMessageId = latestAudio.id;
+          log(`Found latest audio message: ${targetMessageId}`);
+        }
+
+        // Download the audio
+        const media = await whatsappClient.downloadMedia(targetMessageId, targetChatId);
+        if (!media) {
+          return JSON.stringify({ error: 'Failed to download audio message' });
+        }
+
+        // Check if it's actually audio
+        if (!media.mimetype.startsWith('audio/')) {
+          return JSON.stringify({ error: `Message is not audio (type: ${media.mimetype})` });
+        }
+
+        // Transcribe
+        const result = await transcribeAudio(media.data, media.mimetype);
+        if (!result) {
+          return JSON.stringify({ error: 'Transcription failed' });
+        }
+
+        return JSON.stringify({
+          success: true,
+          messageId: targetMessageId,
+          chatId: targetChatId,
+          text: result.text,
+          language: result.language,
+        });
+      } catch (err: any) {
+        return JSON.stringify({ error: err?.message || 'Transcription failed' });
+      }
     }
 
     default:
