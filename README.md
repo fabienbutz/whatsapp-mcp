@@ -13,6 +13,7 @@ A Model Context Protocol (MCP) server that enables LLMs to interact with WhatsAp
 - **QR Code Display**: View QR code directly in Claude for easy authentication
 - **Media Handling**: Send and receive images, documents, and other media
 - **Voice Transcription**: Transcribe voice messages using OpenAI Whisper
+- **Auto-Recovery**: Detects browser crashes and allows reconnection without re-auth
 
 ## Prerequisites
 
@@ -90,6 +91,7 @@ For other MCP-compatible clients, configure the server with:
 | `whatsapp_search_messages` | Search messages by text |
 | `whatsapp_sync_history` | Request a history sync |
 | `whatsapp_logs` | View server logs for debugging |
+| `whatsapp_reconnect` | Reconnect if browser crashed (keeps auth) |
 | `whatsapp_reset_auth` | Reset authentication and scan new QR code |
 | `whatsapp_download_media` | Download media (image, video, audio) from a message |
 | `whatsapp_send_image` | Send an image from URL or base64 data |
@@ -138,6 +140,12 @@ To reduce ban risk:
 ### Messages Not Sending
 - Check `whatsapp_logs` for the specific error
 - Most likely a WhatsApp Web API change - see [CLAUDE.md](CLAUDE.md) for known issues and fixes
+
+### Browser Crashed / "Detached Frame" Error
+If `whatsapp_status` shows `browser_crashed` or you see "detached frame" errors:
+1. Run `whatsapp_reconnect` - this restarts the browser while keeping your auth session
+2. If that fails, use `whatsapp_reset_auth` and scan a new QR code
+3. As a last resort, restart Claude Desktop
 
 ### Puppeteer Errors
 - Ensure Chrome/Chromium is available
