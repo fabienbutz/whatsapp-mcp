@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "whatsapp": {
+      "command": "node",
+      "args": ["/Users/fabienbutz/Documents/GitHub/whatsapp-mcp/build/index.js"]
+    }
+  }
+}

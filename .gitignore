@@ -1,0 +1,41 @@
+# Dependencies
+node_modules/
+
+# Build output
+build/
+dist/
+
+# WhatsApp session data (contains auth tokens)
+.wwebjs_auth/
+.wwebjs_cache/
+auth_info/
+
+# Generated files with private data
+contacts.json
+qr-code.png
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# TypeScript cache
+*.tsbuildinfo
+
+# Test files (development only)
+test-*.ts
+test-*.js
