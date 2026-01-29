@@ -119,6 +119,40 @@ Used for:
 }
 ```
 
+## Message Interactions
+
+### React, Reply, Delete, Edit
+
+All message interaction tools require `messageId` and `chatId`. Get these from `whatsapp_get_messages`.
+
+```typescript
+// React with emoji
+await client.react(messageId, chatId, emoji);  // msg.react(emoji)
+
+// Quote-reply (sendSeen: false applied)
+await client.replyToMessage(chatId, messageId, message);
+// → client.sendMessage(chatId, message, { quotedMessageId, sendSeen: false })
+
+// Delete message
+await client.deleteMessage(messageId, chatId, forEveryone);  // msg.delete(forEveryone)
+
+// Edit message (own messages only, ~1h window)
+await client.editMessage(messageId, chatId, newText);  // msg.edit(newText)
+```
+
+### Typing Indicator
+
+```typescript
+// Show "typing..." or "recording..." in chat
+await client.setTypingState(chatId, 'typing');    // chat.sendStateTyping()
+await client.setTypingState(chatId, 'recording');  // chat.sendStateRecording()
+await client.setTypingState(chatId, 'stop');       // chat.clearState()
+```
+
+### Zod Validation
+
+All 5 new tools use Zod schemas for input validation (defined in `src/index.ts`). Existing tools are unchanged.
+
 ## Troubleshooting
 
 ### "Cannot read properties of undefined (reading 'markedUnread')"

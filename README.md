@@ -11,6 +11,8 @@ A Model Context Protocol (MCP) server that enables LLMs to interact with WhatsAp
 - **Contact Management**: List and search contacts
 - **Search**: Search for messages across chats
 - **QR Code Display**: View QR code directly in Claude for easy authentication
+- **Message Interactions**: React with emojis, quote-reply, edit, and delete messages
+- **Typing Indicator**: Show typing or recording state in chats
 - **Media Handling**: Send and receive images, documents, and other media
 - **Voice Transcription**: Transcribe voice messages using OpenAI Whisper
 - **Auto-Recovery**: Detects browser crashes and allows reconnection without re-auth
@@ -93,6 +95,11 @@ For other MCP-compatible clients, configure the server with:
 | `whatsapp_logs` | View server logs for debugging |
 | `whatsapp_reconnect` | Reconnect if browser crashed (keeps auth) |
 | `whatsapp_reset_auth` | Reset authentication and scan new QR code |
+| `whatsapp_react` | React to a message with an emoji |
+| `whatsapp_reply` | Quote-reply to a specific message |
+| `whatsapp_delete_message` | Delete a message (for everyone or locally) |
+| `whatsapp_edit_message` | Edit a sent text message |
+| `whatsapp_typing_indicator` | Show typing/recording indicator in a chat |
 | `whatsapp_download_media` | Download media (image, video, audio) from a message |
 | `whatsapp_send_image` | Send an image from URL or base64 data |
 | `whatsapp_send_document` | Send a document/file from URL or base64 data |
@@ -109,6 +116,9 @@ Once connected, you can ask Claude things like:
 - "Search my WhatsApp for messages about 'meeting'"
 - "Check my WhatsApp connection status"
 - "Send this image to John" (with an image URL)
+- "React with a thumbs up to the last message from [name]"
+- "Reply to [name]'s last message saying thanks"
+- "Delete the last message I sent to [name]"
 - "Transcribe the last voice message from [name]"
 - "What did [name] say in their voice message?"
 
