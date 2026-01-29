@@ -14,6 +14,9 @@ auth_info/
 contacts.json
 qr-code.png
 
+# Downloaded media
+media/
+
 # Environment files
 .env
 .env.local

@@ -593,50 +593,39 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           analysis = await analyzeMedia(media.data, media.mimetype);
         }
 
-        // If outputPath is provided, save to file
+        // Always save to file — default to media/ in project root
+        let resolvedPath: string;
         if (outputPath) {
-          // Expand ~ to home directory
-          let resolvedPath = outputPath.startsWith('~')
+          resolvedPath = outputPath.startsWith('~')
             ? join(homedir(), outputPath.slice(1))
             : outputPath;
-
-          // Create directory if it doesn't exist
-          if (!existsSync(resolvedPath)) {
-            mkdirSync(resolvedPath, { recursive: true });
-          }
-
-          // Generate filename from mimetype
-          const ext = media.mimetype.split('/')[1]?.split(';')[0] || 'bin';
-          const timestamp = Date.now();
-          const filename = media.filename || `whatsapp_media_${timestamp}.${ext}`;
-          const filePath = join(resolvedPath, filename);
-
-          // Decode base64 and write to file
-          const buffer = Buffer.from(media.data, 'base64');
-          writeFileSync(filePath, buffer);
-
-          log(`Saved media to: ${filePath}`);
-          const result: any = {
-            success: true,
-            saved: true,
-            filePath: filePath,
-            mimetype: media.mimetype,
-            filename: filename,
-            fileSize: buffer.length,
-          };
-          if (analysis) {
-            result.analysis = analysis;
-          }
-          return JSON.stringify(result);
+        } else {
+          // Default: media/ folder in project directory
+          resolvedPath = join(dirname(new URL(import.meta.url).pathname), '..', 'media');
         }
 
-        // Otherwise return base64 data
+        // Create directory if it doesn't exist
+        if (!existsSync(resolvedPath)) {
+          mkdirSync(resolvedPath, { recursive: true });
+        }
+
+        // Generate filename from mimetype
+        const ext = media.mimetype.split('/')[1]?.split(';')[0] || 'bin';
+        const timestamp = Date.now();
+        const filename = media.filename || `whatsapp_media_${timestamp}.${ext}`;
+        const filePath = join(resolvedPath, filename);
+
+        // Decode base64 and write to file
+        const buffer = Buffer.from(media.data, 'base64');
+        writeFileSync(filePath, buffer);
+
+        log(`Saved media to: ${filePath}`);
         const result: any = {
           success: true,
+          filePath: filePath,
           mimetype: media.mimetype,
-          filename: media.filename,
-          dataSize: media.data.length,
-          data: media.data, // base64 encoded
+          filename: filename,
+          fileSize: buffer.length,
         };
         if (analysis) {
           result.analysis = analysis;
