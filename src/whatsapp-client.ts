@@ -1064,6 +1064,182 @@ class WhatsAppClientWrapper {
     }
   }
 
+  async listGroups(limit = 20): Promise<WhatsAppChat[]> {
+    if (!this.client || !this.isReady) {
+      throw new Error('WhatsApp client not ready');
+    }
+
+    try {
+      log(`Listing groups, limit=${limit}`);
+      const chats = await this.client.getChats();
+      const groups = chats
+        .filter((chat: any) => chat.isGroup)
+        .slice(0, limit)
+        .map((chat: any) => ({
+          id: chat.id._serialized,
+          name: chat.name || chat.id._serialized.split('@')[0],
+          isGroup: chat.isGroup,
+          unreadCount: chat.unreadCount || 0,
+          timestamp: chat.timestamp || Date.now(),
+          lastMessage: chat.lastMessage?.body,
+        }));
+      log(`Found ${groups.length} groups`);
+      return groups;
+    } catch (err: any) {
+      log(`Failed to list groups: ${err?.message || err}`);
+      throw err;
+    }
+  }
+
+  async getGroupInfo(chatId: string): Promise<object> {
+    if (!this.client || !this.isReady) {
+      throw new Error('WhatsApp client not ready');
+    }
+
+    try {
+      log(`Getting group info for ${chatId}`);
+      const chat = await this.client.getChatById(chatId);
+      const group = chat as any;
+      const info = {
+        id: group.id._serialized,
+        name: group.name,
+        description: group.description,
+        participants: (group.participants || []).map((p: any) => ({
+          id: p.id._serialized,
+          isAdmin: p.isAdmin,
+          isSuperAdmin: p.isSuperAdmin,
+        })),
+        createdAt: group.createdAt,
+        owner: group.owner?._serialized,
+      };
+      log(`Got group info: ${info.name}, ${info.participants.length} participants`);
+      return info;
+    } catch (err: any) {
+      log(`Failed to get group info: ${err?.message || err}`);
+      throw err;
+    }
+  }
+
+  async createGroup(name: string, participants: string[]): Promise<{ groupId: string }> {
+    if (!this.client || !this.isReady) {
+      throw new Error('WhatsApp client not ready');
+    }
+
+    try {
+      log(`Creating group "${name}" with ${participants.length} participants`);
+      const result = await this.client.createGroup(name, participants);
+      const groupId = (result as any).gid._serialized;
+      log(`Group created: ${groupId}`);
+      return { groupId };
+    } catch (err: any) {
+      log(`Failed to create group: ${err?.message || err}`);
+      throw err;
+    }
+  }
+
+  async addGroupParticipants(chatId: string, participants: string[]): Promise<{ success: boolean }> {
+    if (!this.client || !this.isReady) {
+      throw new Error('WhatsApp client not ready');
+    }
+
+    try {
+      log(`Adding ${participants.length} participants to ${chatId}`);
+      const chat = await this.client.getChatById(chatId);
+      await (chat as any).addParticipants(participants);
+      log(`Participants added to ${chatId}`);
+      return { success: true };
+    } catch (err: any) {
+      log(`Failed to add participants: ${err?.message || err}`);
+      throw err;
+    }
+  }
+
+  async removeGroupParticipants(chatId: string, participants: string[]): Promise<{ success: boolean }> {
+    if (!this.client || !this.isReady) {
+      throw new Error('WhatsApp client not ready');
+    }
+
+    try {
+      log(`Removing ${participants.length} participants from ${chatId}`);
+      const chat = await this.client.getChatById(chatId);
+      await (chat as any).removeParticipants(participants);
+      log(`Participants removed from ${chatId}`);
+      return { success: true };
+    } catch (err: any) {
+      log(`Failed to remove participants: ${err?.message || err}`);
+      throw err;
+    }
+  }
+
+  async setGroupSubject(chatId: string, subject: string): Promise<{ success: boolean }> {
+    if (!this.client || !this.isReady) {
+      throw new Error('WhatsApp client not ready');
+    }
+
+    try {
+      log(`Setting group subject for ${chatId}: "${subject}"`);
+      const chat = await this.client.getChatById(chatId);
+      await (chat as any).setSubject(subject);
+      log(`Group subject updated for ${chatId}`);
+      return { success: true };
+    } catch (err: any) {
+      log(`Failed to set group subject: ${err?.message || err}`);
+      throw err;
+    }
+  }
+
+  async setGroupDescription(chatId: string, description: string): Promise<{ success: boolean }> {
+    if (!this.client || !this.isReady) {
+      throw new Error('WhatsApp client not ready');
+    }
+
+    try {
+      log(`Setting group description for ${chatId}`);
+      const chat = await this.client.getChatById(chatId);
+      await (chat as any).setDescription(description);
+      log(`Group description updated for ${chatId}`);
+      return { success: true };
+    } catch (err: any) {
+      log(`Failed to set group description: ${err?.message || err}`);
+      throw err;
+    }
+  }
+
+  async leaveGroup(chatId: string): Promise<{ success: boolean }> {
+    if (!this.client || !this.isReady) {
+      throw new Error('WhatsApp client not ready');
+    }
+
+    try {
+      log(`Leaving group ${chatId}`);
+      const chat = await this.client.getChatById(chatId);
+      await (chat as any).leave();
+      log(`Left group ${chatId}`);
+      return { success: true };
+    } catch (err: any) {
+      log(`Failed to leave group: ${err?.message || err}`);
+      throw err;
+    }
+  }
+
+  async getGroupInviteLink(chatId: string): Promise<{ inviteLink: string }> {
+    if (!this.client || !this.isReady) {
+      throw new Error('WhatsApp client not ready');
+    }
+
+    try {
+      log(`Getting invite link for ${chatId}`);
+      const chat = await this.client.getChatById(chatId);
+      const code = await (chat as any).getInviteCode();
+      const inviteLink = `https://chat.whatsapp.com/${code}`;
+      log(`Got invite link for ${chatId}`);
+      return { inviteLink };
+    } catch (err: any) {
+      log(`Failed to get invite link: ${err?.message || err}`);
+      throw err;
+    }
+  }
+
   async destroy(): Promise<void> {
     if (this.client) {
       try {

@@ -45,6 +45,42 @@ const typingIndicatorSchema = z.object({
   action: z.enum(['typing', 'recording', 'stop']),
 });
 
+const listGroupsSchema = z.object({
+  limit: z.number().optional().default(20),
+});
+
+const groupInfoSchema = z.object({
+  chatId: z.string(),
+});
+
+const createGroupSchema = z.object({
+  name: z.string(),
+  participants: z.array(z.string()),
+});
+
+const groupParticipantsSchema = z.object({
+  chatId: z.string(),
+  participants: z.array(z.string()),
+});
+
+const groupSubjectSchema = z.object({
+  chatId: z.string(),
+  subject: z.string(),
+});
+
+const groupDescriptionSchema = z.object({
+  chatId: z.string(),
+  description: z.string(),
+});
+
+const leaveGroupSchema = z.object({
+  chatId: z.string(),
+});
+
+const groupInviteLinkSchema = z.object({
+  chatId: z.string(),
+});
+
 const tools: Tool[] = [
   {
     name: 'whatsapp_status',
@@ -454,6 +490,155 @@ const tools: Tool[] = [
         }
       },
       required: ['chatId', 'action']
+    }
+  },
+  {
+    name: 'whatsapp_list_groups',
+    description: 'List all WhatsApp groups.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        limit: {
+          type: 'number',
+          description: 'Maximum number of groups to return (default: 20)'
+        }
+      },
+      required: []
+    }
+  },
+  {
+    name: 'whatsapp_group_info',
+    description: 'Get detailed info about a WhatsApp group including participants, admins, and description.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        chatId: {
+          type: 'string',
+          description: 'The group chat ID (ends with @g.us)'
+        }
+      },
+      required: ['chatId']
+    }
+  },
+  {
+    name: 'whatsapp_create_group',
+    description: 'Create a new WhatsApp group.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: {
+          type: 'string',
+          description: 'The name for the new group'
+        },
+        participants: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Phone numbers of participants to add (e.g., 4915123456789@c.us)'
+        }
+      },
+      required: ['name', 'participants']
+    }
+  },
+  {
+    name: 'whatsapp_group_add_participants',
+    description: 'Add participants to a WhatsApp group.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        chatId: {
+          type: 'string',
+          description: 'The group chat ID (ends with @g.us)'
+        },
+        participants: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Phone numbers of participants to add (e.g., 4915123456789@c.us)'
+        }
+      },
+      required: ['chatId', 'participants']
+    }
+  },
+  {
+    name: 'whatsapp_group_remove_participants',
+    description: 'Remove participants from a WhatsApp group.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        chatId: {
+          type: 'string',
+          description: 'The group chat ID (ends with @g.us)'
+        },
+        participants: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Phone numbers of participants to remove (e.g., 4915123456789@c.us)'
+        }
+      },
+      required: ['chatId', 'participants']
+    }
+  },
+  {
+    name: 'whatsapp_group_set_subject',
+    description: 'Change the name/subject of a WhatsApp group.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        chatId: {
+          type: 'string',
+          description: 'The group chat ID (ends with @g.us)'
+        },
+        subject: {
+          type: 'string',
+          description: 'The new group name'
+        }
+      },
+      required: ['chatId', 'subject']
+    }
+  },
+  {
+    name: 'whatsapp_group_set_description',
+    description: 'Change the description of a WhatsApp group.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        chatId: {
+          type: 'string',
+          description: 'The group chat ID (ends with @g.us)'
+        },
+        description: {
+          type: 'string',
+          description: 'The new group description'
+        }
+      },
+      required: ['chatId', 'description']
+    }
+  },
+  {
+    name: 'whatsapp_leave_group',
+    description: 'Leave a WhatsApp group.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        chatId: {
+          type: 'string',
+          description: 'The group chat ID (ends with @g.us)'
+        }
+      },
+      required: ['chatId']
+    }
+  },
+  {
+    name: 'whatsapp_group_invite_link',
+    description: 'Get or generate the invite link for a WhatsApp group.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        chatId: {
+          type: 'string',
+          description: 'The group chat ID (ends with @g.us)'
+        }
+      },
+      required: ['chatId']
     }
   }
 ];
@@ -993,6 +1178,123 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         return JSON.stringify({ ...result, chatId: parsed.chatId, action: parsed.action });
       } catch (err: any) {
         return JSON.stringify({ error: err?.message || 'Failed to set typing indicator' });
+      }
+    }
+
+    case 'whatsapp_list_groups': {
+      const parsed = listGroupsSchema.parse(args);
+      if (!whatsappClient.isClientReady()) {
+        return JSON.stringify({ error: 'WhatsApp is not connected. Check status first.' });
+      }
+      try {
+        const result = await whatsappClient.listGroups(parsed.limit);
+        return JSON.stringify(result);
+      } catch (err: any) {
+        return JSON.stringify({ error: err?.message || 'Failed to list groups' });
+      }
+    }
+
+    case 'whatsapp_group_info': {
+      const parsed = groupInfoSchema.parse(args);
+      if (!whatsappClient.isClientReady()) {
+        return JSON.stringify({ error: 'WhatsApp is not connected. Check status first.' });
+      }
+      try {
+        const result = await whatsappClient.getGroupInfo(parsed.chatId);
+        return JSON.stringify(result);
+      } catch (err: any) {
+        return JSON.stringify({ error: err?.message || 'Failed to get group info' });
+      }
+    }
+
+    case 'whatsapp_create_group': {
+      const parsed = createGroupSchema.parse(args);
+      if (!whatsappClient.isClientReady()) {
+        return JSON.stringify({ error: 'WhatsApp is not connected. Check status first.' });
+      }
+      try {
+        const result = await whatsappClient.createGroup(parsed.name, parsed.participants);
+        return JSON.stringify(result);
+      } catch (err: any) {
+        return JSON.stringify({ error: err?.message || 'Failed to create group' });
+      }
+    }
+
+    case 'whatsapp_group_add_participants': {
+      const parsed = groupParticipantsSchema.parse(args);
+      if (!whatsappClient.isClientReady()) {
+        return JSON.stringify({ error: 'WhatsApp is not connected. Check status first.' });
+      }
+      try {
+        const result = await whatsappClient.addGroupParticipants(parsed.chatId, parsed.participants);
+        return JSON.stringify(result);
+      } catch (err: any) {
+        return JSON.stringify({ error: err?.message || 'Failed to add participants' });
+      }
+    }
+
+    case 'whatsapp_group_remove_participants': {
+      const parsed = groupParticipantsSchema.parse(args);
+      if (!whatsappClient.isClientReady()) {
+        return JSON.stringify({ error: 'WhatsApp is not connected. Check status first.' });
+      }
+      try {
+        const result = await whatsappClient.removeGroupParticipants(parsed.chatId, parsed.participants);
+        return JSON.stringify(result);
+      } catch (err: any) {
+        return JSON.stringify({ error: err?.message || 'Failed to remove participants' });
+      }
+    }
+
+    case 'whatsapp_group_set_subject': {
+      const parsed = groupSubjectSchema.parse(args);
+      if (!whatsappClient.isClientReady()) {
+        return JSON.stringify({ error: 'WhatsApp is not connected. Check status first.' });
+      }
+      try {
+        const result = await whatsappClient.setGroupSubject(parsed.chatId, parsed.subject);
+        return JSON.stringify(result);
+      } catch (err: any) {
+        return JSON.stringify({ error: err?.message || 'Failed to set group subject' });
+      }
+    }
+
+    case 'whatsapp_group_set_description': {
+      const parsed = groupDescriptionSchema.parse(args);
+      if (!whatsappClient.isClientReady()) {
+        return JSON.stringify({ error: 'WhatsApp is not connected. Check status first.' });
+      }
+      try {
+        const result = await whatsappClient.setGroupDescription(parsed.chatId, parsed.description);
+        return JSON.stringify(result);
+      } catch (err: any) {
+        return JSON.stringify({ error: err?.message || 'Failed to set group description' });
+      }
+    }
+
+    case 'whatsapp_leave_group': {
+      const parsed = leaveGroupSchema.parse(args);
+      if (!whatsappClient.isClientReady()) {
+        return JSON.stringify({ error: 'WhatsApp is not connected. Check status first.' });
+      }
+      try {
+        const result = await whatsappClient.leaveGroup(parsed.chatId);
+        return JSON.stringify(result);
+      } catch (err: any) {
+        return JSON.stringify({ error: err?.message || 'Failed to leave group' });
+      }
+    }
+
+    case 'whatsapp_group_invite_link': {
+      const parsed = groupInviteLinkSchema.parse(args);
+      if (!whatsappClient.isClientReady()) {
+        return JSON.stringify({ error: 'WhatsApp is not connected. Check status first.' });
+      }
+      try {
+        const result = await whatsappClient.getGroupInviteLink(parsed.chatId);
+        return JSON.stringify(result);
+      } catch (err: any) {
+        return JSON.stringify({ error: err?.message || 'Failed to get group invite link' });
       }
     }
 
