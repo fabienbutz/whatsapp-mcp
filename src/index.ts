@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 
 import 'dotenv/config';
+import { writeFileSync, mkdirSync, existsSync } from 'fs';
+import { join, dirname } from 'path';
+import { homedir } from 'os';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
@@ -217,7 +220,7 @@ const tools: Tool[] = [
   },
   {
     name: 'whatsapp_download_media',
-    description: 'Download media (image, video, audio, document) from a WhatsApp message. Returns base64 encoded data.',
+    description: 'Download media (image, video, audio, document) from a WhatsApp message. If outputPath is provided, saves the file to disk and returns the file path. Otherwise returns base64 encoded data.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -228,6 +231,10 @@ const tools: Tool[] = [
         chatId: {
           type: 'string',
           description: 'The chat ID where the message is located (e.g., 4915123456789@c.us)'
+        },
+        outputPath: {
+          type: 'string',
+          description: 'Optional: Directory path where to save the file. Use ~/Downloads or an absolute path. If provided, the file will be saved with an auto-generated filename based on mimetype.'
         }
       },
       required: ['messageId', 'chatId']
@@ -559,7 +566,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
     }
 
     case 'whatsapp_download_media': {
-      const { messageId, chatId } = args as { messageId: string; chatId: string };
+      const { messageId, chatId, outputPath } = args as { messageId: string; chatId: string; outputPath?: string };
       if (!messageId || !chatId) {
         return JSON.stringify({ error: 'messageId and chatId are required' });
       }
@@ -572,6 +579,41 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         if (!media) {
           return JSON.stringify({ error: 'Media not found or message has no media' });
         }
+
+        // If outputPath is provided, save to file
+        if (outputPath) {
+          // Expand ~ to home directory
+          let resolvedPath = outputPath.startsWith('~')
+            ? join(homedir(), outputPath.slice(1))
+            : outputPath;
+
+          // Create directory if it doesn't exist
+          if (!existsSync(resolvedPath)) {
+            mkdirSync(resolvedPath, { recursive: true });
+          }
+
+          // Generate filename from mimetype
+          const ext = media.mimetype.split('/')[1]?.split(';')[0] || 'bin';
+          const timestamp = Date.now();
+          const filename = media.filename || `whatsapp_media_${timestamp}.${ext}`;
+          const filePath = join(resolvedPath, filename);
+
+          // Decode base64 and write to file
+          const buffer = Buffer.from(media.data, 'base64');
+          writeFileSync(filePath, buffer);
+
+          log(`Saved media to: ${filePath}`);
+          return JSON.stringify({
+            success: true,
+            saved: true,
+            filePath: filePath,
+            mimetype: media.mimetype,
+            filename: filename,
+            fileSize: buffer.length,
+          });
+        }
+
+        // Otherwise return base64 data
         return JSON.stringify({
           success: true,
           mimetype: media.mimetype,
