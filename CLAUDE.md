@@ -72,18 +72,20 @@ await client.sendMessage(jid, media, { sendSeen: false, caption: 'Optional capti
 
 ### Downloading & Saving Media
 
-The `whatsapp_download_media` tool supports saving files directly to disk and optional AI analysis:
+The `whatsapp_download_media` tool **always saves files to disk** (never returns base64 to avoid token bloat):
 
 ```typescript
 // MCP tool parameters:
 // - messageId (required): Message ID
 // - chatId (required): Chat ID
-// - outputPath (optional): Directory to save file (e.g., ~/Downloads)
+// - outputPath (optional): Directory to save file. Default: media/ in project root
 // - analyze (optional): AI analysis via GPT-4o Vision (ask user first!)
 ```
 
-- `outputPath`: Saves binary file to disk, supports `~` expansion, auto-creates directories
+- **Default save location:** `media/` in project root (gitignored)
+- `outputPath`: Override save directory, supports `~` expansion, auto-creates directories
 - `analyze: true`: Images → content description + text extraction, Documents/PDFs → OCR + summary
+- **No base64 in response** — only file path + metadata are returned to keep token usage low
 
 **Internal API:**
 
