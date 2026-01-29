@@ -938,6 +938,132 @@ class WhatsAppClientWrapper {
     ).slice(-limit);
   }
 
+  async react(messageId: string, chatId: string, emoji: string): Promise<{ success: boolean }> {
+    if (!this.client || !this.isReady) {
+      throw new Error('WhatsApp client not ready');
+    }
+
+    try {
+      log(`Reacting to message ${messageId} in ${chatId} with ${emoji}`);
+      const chat = await this.client.getChatById(chatId);
+      const messages = await chat.fetchMessages({ limit: 100 });
+      const msg = messages.find((m: any) =>
+        m.id._serialized === messageId || m.id.id === messageId
+      );
+
+      if (!msg) {
+        throw new Error(`Message ${messageId} not found in chat`);
+      }
+
+      await msg.react(emoji);
+      log(`Reacted with ${emoji} successfully`);
+      return { success: true };
+    } catch (err: any) {
+      log(`Failed to react: ${err?.message || err}`);
+      throw err;
+    }
+  }
+
+  async replyToMessage(chatId: string, messageId: string, message: string): Promise<SendResult> {
+    if (!this.client || !this.isReady) {
+      throw new Error('WhatsApp client not ready');
+    }
+
+    try {
+      log(`Replying to message ${messageId} in ${chatId}`);
+      const result = await this.client.sendMessage(chatId, message, {
+        quotedMessageId: messageId,
+        sendSeen: false,
+      });
+
+      log(`Reply sent, id: ${result?.id?._serialized || 'unknown'}`);
+      return {
+        success: true,
+        messageId: result?.id?._serialized || undefined,
+      };
+    } catch (err: any) {
+      log(`Failed to reply: ${err?.message || err}`);
+      throw err;
+    }
+  }
+
+  async deleteMessage(messageId: string, chatId: string, forEveryone = true): Promise<{ success: boolean }> {
+    if (!this.client || !this.isReady) {
+      throw new Error('WhatsApp client not ready');
+    }
+
+    try {
+      log(`Deleting message ${messageId} in ${chatId}, forEveryone=${forEveryone}`);
+      const chat = await this.client.getChatById(chatId);
+      const messages = await chat.fetchMessages({ limit: 100 });
+      const msg = messages.find((m: any) =>
+        m.id._serialized === messageId || m.id.id === messageId
+      );
+
+      if (!msg) {
+        throw new Error(`Message ${messageId} not found in chat`);
+      }
+
+      await msg.delete(forEveryone);
+      log(`Message deleted successfully`);
+      return { success: true };
+    } catch (err: any) {
+      log(`Failed to delete message: ${err?.message || err}`);
+      throw err;
+    }
+  }
+
+  async editMessage(messageId: string, chatId: string, newText: string): Promise<{ success: boolean }> {
+    if (!this.client || !this.isReady) {
+      throw new Error('WhatsApp client not ready');
+    }
+
+    try {
+      log(`Editing message ${messageId} in ${chatId}`);
+      const chat = await this.client.getChatById(chatId);
+      const messages = await chat.fetchMessages({ limit: 100 });
+      const msg = messages.find((m: any) =>
+        m.id._serialized === messageId || m.id.id === messageId
+      );
+
+      if (!msg) {
+        throw new Error(`Message ${messageId} not found in chat`);
+      }
+
+      await msg.edit(newText);
+      log(`Message edited successfully`);
+      return { success: true };
+    } catch (err: any) {
+      log(`Failed to edit message: ${err?.message || err}`);
+      throw err;
+    }
+  }
+
+  async setTypingState(chatId: string, action: 'typing' | 'recording' | 'stop'): Promise<{ success: boolean }> {
+    if (!this.client || !this.isReady) {
+      throw new Error('WhatsApp client not ready');
+    }
+
+    try {
+      log(`Setting typing state for ${chatId}: ${action}`);
+      const chat = await this.client.getChatById(chatId);
+
+      if (action === 'typing') {
+        await chat.sendStateTyping();
+      } else if (action === 'recording') {
+        await chat.sendStateRecording();
+      } else {
+        await chat.clearState();
+      }
+
+      log(`Typing state set to ${action}`);
+      return { success: true };
+    } catch (err: any) {
+      log(`Failed to set typing state: ${err?.message || err}`);
+      throw err;
+    }
+  }
+
   async destroy(): Promise<void> {
     if (this.client) {
       try {

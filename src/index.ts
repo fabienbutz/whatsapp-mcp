@@ -4,6 +4,7 @@ import 'dotenv/config';
 import { writeFileSync, mkdirSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
+import { z } from 'zod';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
@@ -13,6 +14,36 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { whatsappClient, getLogs, log } from './whatsapp-client.js';
 import { transcribeAudio, isTranscriptionAvailable, analyzeMedia, isAnalysisAvailable } from './transcription.js';
+
+// Zod schemas for new tools
+const reactSchema = z.object({
+  messageId: z.string(),
+  chatId: z.string(),
+  emoji: z.string(),
+});
+
+const replySchema = z.object({
+  chatId: z.string(),
+  messageId: z.string(),
+  message: z.string(),
+});
+
+const deleteMessageSchema = z.object({
+  messageId: z.string(),
+  chatId: z.string(),
+  forEveryone: z.boolean().default(true),
+});
+
+const editMessageSchema = z.object({
+  messageId: z.string(),
+  chatId: z.string(),
+  newText: z.string(),
+});
+
+const typingIndicatorSchema = z.object({
+  chatId: z.string(),
+  action: z.enum(['typing', 'recording', 'stop']),
+});
 
 const tools: Tool[] = [
   {
@@ -316,6 +347,113 @@ const tools: Tool[] = [
         }
       },
       required: []
+    }
+  },
+  {
+    name: 'whatsapp_react',
+    description: 'React to a WhatsApp message with an emoji.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        messageId: {
+          type: 'string',
+          description: 'The ID of the message to react to'
+        },
+        chatId: {
+          type: 'string',
+          description: 'The chat ID where the message is located'
+        },
+        emoji: {
+          type: 'string',
+          description: 'The emoji to react with (e.g., 👍, ❤️, 😂)'
+        }
+      },
+      required: ['messageId', 'chatId', 'emoji']
+    }
+  },
+  {
+    name: 'whatsapp_reply',
+    description: 'Reply to a specific WhatsApp message (quote reply). The original message will be shown as a quote above your reply.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        chatId: {
+          type: 'string',
+          description: 'The chat ID where the message is located'
+        },
+        messageId: {
+          type: 'string',
+          description: 'The ID of the message to reply to'
+        },
+        message: {
+          type: 'string',
+          description: 'The reply message text'
+        }
+      },
+      required: ['chatId', 'messageId', 'message']
+    }
+  },
+  {
+    name: 'whatsapp_delete_message',
+    description: 'Delete a WhatsApp message. By default deletes for everyone.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        messageId: {
+          type: 'string',
+          description: 'The ID of the message to delete'
+        },
+        chatId: {
+          type: 'string',
+          description: 'The chat ID where the message is located'
+        },
+        forEveryone: {
+          type: 'boolean',
+          description: 'If true (default), deletes for all participants. If false, only deletes locally.'
+        }
+      },
+      required: ['messageId', 'chatId']
+    }
+  },
+  {
+    name: 'whatsapp_edit_message',
+    description: 'Edit a sent WhatsApp message. Only works on your own text messages and within ~1 hour of sending.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        messageId: {
+          type: 'string',
+          description: 'The ID of the message to edit'
+        },
+        chatId: {
+          type: 'string',
+          description: 'The chat ID where the message is located'
+        },
+        newText: {
+          type: 'string',
+          description: 'The new text for the message'
+        }
+      },
+      required: ['messageId', 'chatId', 'newText']
+    }
+  },
+  {
+    name: 'whatsapp_typing_indicator',
+    description: 'Show or hide the typing/recording indicator in a chat.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        chatId: {
+          type: 'string',
+          description: 'The chat ID to show the indicator in'
+        },
+        action: {
+          type: 'string',
+          enum: ['typing', 'recording', 'stop'],
+          description: 'The action: "typing" shows typing indicator, "recording" shows recording indicator, "stop" clears the indicator'
+        }
+      },
+      required: ['chatId', 'action']
     }
   }
 ];
@@ -790,6 +928,71 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         });
       } catch (err: any) {
         return JSON.stringify({ error: err?.message || 'Transcription failed' });
+      }
+    }
+
+    case 'whatsapp_react': {
+      const parsed = reactSchema.parse(args);
+      if (!whatsappClient.isClientReady()) {
+        return JSON.stringify({ error: 'WhatsApp is not connected. Check status first.' });
+      }
+      try {
+        const result = await whatsappClient.react(parsed.messageId, parsed.chatId, parsed.emoji);
+        return JSON.stringify({ ...result, emoji: parsed.emoji, messageId: parsed.messageId });
+      } catch (err: any) {
+        return JSON.stringify({ error: err?.message || 'Failed to react to message' });
+      }
+    }
+
+    case 'whatsapp_reply': {
+      const parsed = replySchema.parse(args);
+      if (!whatsappClient.isClientReady()) {
+        return JSON.stringify({ error: 'WhatsApp is not connected. Check status first.' });
+      }
+      try {
+        const result = await whatsappClient.replyToMessage(parsed.chatId, parsed.messageId, parsed.message);
+        return JSON.stringify(result);
+      } catch (err: any) {
+        return JSON.stringify({ error: err?.message || 'Failed to reply to message' });
+      }
+    }
+
+    case 'whatsapp_delete_message': {
+      const parsed = deleteMessageSchema.parse(args);
+      if (!whatsappClient.isClientReady()) {
+        return JSON.stringify({ error: 'WhatsApp is not connected. Check status first.' });
+      }
+      try {
+        const result = await whatsappClient.deleteMessage(parsed.messageId, parsed.chatId, parsed.forEveryone);
+        return JSON.stringify({ ...result, messageId: parsed.messageId, forEveryone: parsed.forEveryone });
+      } catch (err: any) {
+        return JSON.stringify({ error: err?.message || 'Failed to delete message' });
+      }
+    }
+
+    case 'whatsapp_edit_message': {
+      const parsed = editMessageSchema.parse(args);
+      if (!whatsappClient.isClientReady()) {
+        return JSON.stringify({ error: 'WhatsApp is not connected. Check status first.' });
+      }
+      try {
+        const result = await whatsappClient.editMessage(parsed.messageId, parsed.chatId, parsed.newText);
+        return JSON.stringify({ ...result, messageId: parsed.messageId });
+      } catch (err: any) {
+        return JSON.stringify({ error: err?.message || 'Failed to edit message' });
+      }
+    }
+
+    case 'whatsapp_typing_indicator': {
+      const parsed = typingIndicatorSchema.parse(args);
+      if (!whatsappClient.isClientReady()) {
+        return JSON.stringify({ error: 'WhatsApp is not connected. Check status first.' });
+      }
+      try {
+        const result = await whatsappClient.setTypingState(parsed.chatId, parsed.action);
+        return JSON.stringify({ ...result, chatId: parsed.chatId, action: parsed.action });
+      } catch (err: any) {
+        return JSON.stringify({ error: err?.message || 'Failed to set typing indicator' });
       }
     }
 
