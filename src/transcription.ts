@@ -112,3 +112,79 @@ export async function transcribeAudio(
     throw new Error(`Transcription failed: ${err?.message || 'Unknown error'}`);
   }
 }
+
+/**
+ * Check if media analysis (vision) is available
+ */
+export function isAnalysisAvailable(): boolean {
+  return getOpenAIClient() !== null;
+}
+
+/**
+ * Analyze media content using OpenAI GPT-4o Vision
+ * Supports images (describe content) and documents (OCR + summarize)
+ * @param base64Data Base64 encoded media data
+ * @param mimeType MIME type of the media
+ * @returns Analysis result with description text
+ */
+export async function analyzeMedia(
+  base64Data: string,
+  mimeType: string
+): Promise<{ description: string; type: 'image' | 'document' } | null> {
+  const client = getOpenAIClient();
+
+  if (!client) {
+    throw new Error('Analysis not available. Set OPENAI_API_KEY in your MCP config or .env file.');
+  }
+
+  const isImage = mimeType.startsWith('image/');
+  const isDocument = mimeType === 'application/pdf' || mimeType.startsWith('text/');
+
+  if (!isImage && !isDocument) {
+    return null;
+  }
+
+  try {
+    const mediaType = isImage ? 'image' : 'document';
+    log(`Analyzing ${mediaType}, mimetype: ${mimeType}, size: ${base64Data.length} bytes`);
+
+    const prompt = isImage
+      ? 'Describe this image in detail. What do you see? If there is text in the image, also extract it.'
+      : 'Extract and summarize the text content of this document. Provide both the raw text and a brief summary.';
+
+    const response = await client.chat.completions.create({
+      model: 'gpt-4o',
+      max_tokens: 1000,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: prompt },
+            {
+              type: 'image_url',
+              image_url: {
+                url: `data:${mimeType};base64,${base64Data}`,
+              },
+            },
+          ],
+        },
+      ],
+    });
+
+    const description = response.choices[0]?.message?.content || '';
+    log(`Analysis successful: "${description.substring(0, 50)}..."`);
+
+    return { description, type: mediaType };
+  } catch (err: any) {
+    log(`Analysis failed: ${err?.message || err}`);
+
+    if (err?.status === 401) {
+      throw new Error('Invalid OpenAI API key. Check your OPENAI_API_KEY configuration.');
+    }
+    if (err?.status === 429) {
+      throw new Error('OpenAI rate limit exceeded. Please try again later.');
+    }
+
+    throw new Error(`Analysis failed: ${err?.message || 'Unknown error'}`);
+  }
+}

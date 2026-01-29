@@ -12,7 +12,7 @@ import {
   Tool,
 } from '@modelcontextprotocol/sdk/types.js';
 import { whatsappClient, getLogs, log } from './whatsapp-client.js';
-import { transcribeAudio, isTranscriptionAvailable } from './transcription.js';
+import { transcribeAudio, isTranscriptionAvailable, analyzeMedia, isAnalysisAvailable } from './transcription.js';
 
 const tools: Tool[] = [
   {
@@ -235,6 +235,10 @@ const tools: Tool[] = [
         outputPath: {
           type: 'string',
           description: 'Optional: Directory path where to save the file. Use ~/Downloads or an absolute path. If provided, the file will be saved with an auto-generated filename based on mimetype.'
+        },
+        analyze: {
+          type: 'boolean',
+          description: 'Optional: If true, analyze the media content using AI (GPT-4o Vision for images, OCR + summary for documents). Ask the user first whether they want analysis. Requires OPENAI_API_KEY.'
         }
       },
       required: ['messageId', 'chatId']
@@ -566,7 +570,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
     }
 
     case 'whatsapp_download_media': {
-      const { messageId, chatId, outputPath } = args as { messageId: string; chatId: string; outputPath?: string };
+      const { messageId, chatId, outputPath, analyze } = args as { messageId: string; chatId: string; outputPath?: string; analyze?: boolean };
       if (!messageId || !chatId) {
         return JSON.stringify({ error: 'messageId and chatId are required' });
       }
@@ -578,6 +582,15 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         const media = await whatsappClient.downloadMedia(messageId, chatId);
         if (!media) {
           return JSON.stringify({ error: 'Media not found or message has no media' });
+        }
+
+        // Run AI analysis if requested
+        let analysis: { description: string; type: 'image' | 'document' } | null = null;
+        if (analyze) {
+          if (!isAnalysisAvailable()) {
+            return JSON.stringify({ error: 'Analysis not available. Set OPENAI_API_KEY in your MCP config or .env file.' });
+          }
+          analysis = await analyzeMedia(media.data, media.mimetype);
         }
 
         // If outputPath is provided, save to file
@@ -603,24 +616,32 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
           writeFileSync(filePath, buffer);
 
           log(`Saved media to: ${filePath}`);
-          return JSON.stringify({
+          const result: any = {
             success: true,
             saved: true,
             filePath: filePath,
             mimetype: media.mimetype,
             filename: filename,
             fileSize: buffer.length,
-          });
+          };
+          if (analysis) {
+            result.analysis = analysis;
+          }
+          return JSON.stringify(result);
         }
 
         // Otherwise return base64 data
-        return JSON.stringify({
+        const result: any = {
           success: true,
           mimetype: media.mimetype,
           filename: media.filename,
           dataSize: media.data.length,
           data: media.data, // base64 encoded
-        });
+        };
+        if (analysis) {
+          result.analysis = analysis;
+        }
+        return JSON.stringify(result);
       } catch (err: any) {
         return JSON.stringify({ error: err?.message || 'Failed to download media' });
       }
