@@ -54,7 +54,7 @@ rm -rf .wwebjs_auth
 |-------------|-------------|
 | `src/whatsapp-client.ts` | WhatsApp Client wrapper (whatsapp-web.js) |
 | `src/index.ts` | MCP Server with tools |
-| `src/transcription.ts` | OpenAI Whisper integration for voice messages |
+| `src/transcription.ts` | OpenAI Whisper transcription + GPT-4o Vision media analysis |
 | `.wwebjs_auth/` | Puppeteer session data |
 | `contacts.json` | Contacts cache |
 
@@ -70,7 +70,22 @@ const media = await MessageMedia.fromUrl(imageUrl, { unsafeMime: true });
 await client.sendMessage(jid, media, { sendSeen: false, caption: 'Optional caption' });
 ```
 
-### Downloading Media
+### Downloading & Saving Media
+
+The `whatsapp_download_media` tool supports saving files directly to disk and optional AI analysis:
+
+```typescript
+// MCP tool parameters:
+// - messageId (required): Message ID
+// - chatId (required): Chat ID
+// - outputPath (optional): Directory to save file (e.g., ~/Downloads)
+// - analyze (optional): AI analysis via GPT-4o Vision (ask user first!)
+```
+
+- `outputPath`: Saves binary file to disk, supports `~` expansion, auto-creates directories
+- `analyze: true`: Images → content description + text extraction, Documents/PDFs → OCR + summary
+
+**Internal API:**
 
 ```typescript
 const media = await message.downloadMedia();
@@ -78,11 +93,15 @@ const media = await message.downloadMedia();
 // media.mimetype = 'audio/ogg', 'image/jpeg', etc.
 ```
 
-### Voice Message Transcription
+### Voice Message Transcription & Media Analysis
 
 Requires `OPENAI_API_KEY` set via:
 1. MCP server config `env` field (recommended)
 2. `.env` file in project root (fallback)
+
+Used for:
+- **Whisper**: Voice message transcription
+- **GPT-4o Vision**: Image description, text extraction, document OCR/summary
 
 ```json
 {
