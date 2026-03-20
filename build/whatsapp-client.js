@@ -1,0 +1,1266 @@
+import pkg from 'whatsapp-web.js';
+const { Client, LocalAuth } = pkg;
+import QRCode from 'qrcode';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
+import { readFileSync, writeFileSync, existsSync } from 'fs';
+// MCP uses stdout ONLY for JSON-RPC - redirect ALL other output to stderr
+const originalStdoutWrite = process.stdout.write.bind(process.stdout);
+process.stdout.write = (chunk, encoding, callback) => {
+    // Only allow JSON-RPC messages (start with '{')
+    const str = typeof chunk === 'string' ? chunk : chunk.toString();
+    if (str.trim().startsWith('{') || str.trim().startsWith('Content-Length')) {
+        return originalStdoutWrite(chunk, encoding, callback);
+    }
+    // Redirect everything else to stderr
+    return process.stderr.write(chunk, encoding, callback);
+};
+// Also redirect console.log to stderr
+console.log = (...args) => {
+    console.error(...args);
+};
+// Generate QR code as base64 data URL (compact but scannable)
+async function generateQRCodeBase64(text) {
+    return await QRCode.toDataURL(text, { width: 120, margin: 1 });
+}
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const AUTH_FOLDER = join(__dirname, '..', '.wwebjs_auth');
+const QR_IMAGE_PATH = join(__dirname, '..', 'qr-code.png');
+const CONTACTS_FILE = join(__dirname, '..', 'contacts.json');
+const LOG_BUFFER = [];
+const MAX_LOG_ENTRIES = 200;
+export function log(...args) {
+    const timestamp = new Date().toISOString().slice(11, 19);
+    const message = args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ');
+    const entry = `[${timestamp}] ${message}`;
+    LOG_BUFFER.push(entry);
+    if (LOG_BUFFER.length > MAX_LOG_ENTRIES) {
+        LOG_BUFFER.shift();
+    }
+    console.error(entry);
+}
+export function getLogs(limit = 50) {
+    return LOG_BUFFER.slice(-limit);
+}
+class WhatsAppClientWrapper {
+    client = null;
+    isReady = false;
+    qrCode = null;
+    qrImagePath = null;
+    contacts = new Map();
+    messages = new Map(); // chatId -> messages
+    constructor() {
+        // Load contacts from file on startup
+        this.loadContactsFromFile();
+    }
+    loadContactsFromFile() {
+        try {
+            if (existsSync(CONTACTS_FILE)) {
+                const data = readFileSync(CONTACTS_FILE, 'utf-8');
+                const parsed = JSON.parse(data);
+                this.contacts = new Map(Object.entries(parsed));
+                log(`Loaded ${this.contacts.size} contacts from cache`);
+            }
+        }
+        catch (err) {
+            log(`Failed to load contacts: ${err}`);
+        }
+    }
+    saveContactsToFile() {
+        try {
+            const obj = Object.fromEntries(this.contacts);
+            writeFileSync(CONTACTS_FILE, JSON.stringify(obj, null, 2));
+            log(`Saved ${this.contacts.size} contacts to: ${CONTACTS_FILE}`);
+        }
+        catch (err) {
+            log('Failed to save contacts to file:', err);
+        }
+    }
+    async initialize() {
+        log('Initializing WhatsApp client (whatsapp-web.js)...');
+        this.client = new Client({
+            authStrategy: new LocalAuth({
+                dataPath: AUTH_FOLDER,
+            }),
+            puppeteer: {
+                headless: true,
+                args: [
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                    '--disable-gpu',
+                    '--disable-dev-shm-usage',
+                    '--disable-accelerated-2d-canvas',
+                ],
+            },
+            // Use cached WhatsApp Web version for compatibility
+            webVersionCache: {
+                type: 'remote',
+                remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.3000.1032570163-alpha.html',
+            },
+        });
+        this.client.on('qr', async (qr) => {
+            this.qrCode = qr;
+            this.qrImagePath = QR_IMAGE_PATH;
+            try {
+                await QRCode.toFile(QR_IMAGE_PATH, qr, { width: 300, margin: 2 });
+                log(`QR Code saved to: ${QR_IMAGE_PATH}`);
+                log('Scan with WhatsApp to authenticate!');
+            }
+            catch (err) {
+                log('Failed to save QR code:', err);
+            }
+        });
+        this.client.on('authenticated', () => {
+            log('Authenticated successfully');
+            this.qrCode = null;
+            // Trigger ready check after authentication
+            this.checkReadyAfterAuth();
+        });
+        this.client.on('auth_failure', (msg) => {
+            log('Authentication failure:', msg);
+        });
+        this.client.on('ready', async () => {
+            this.isReady = true;
+            this.qrCode = null;
+            log('EVENT: ready - WhatsApp client is ready!');
+            await this.syncContacts();
+        });
+        this.client.on('disconnected', (reason) => {
+            log('EVENT: disconnected -', reason);
+            this.isReady = false;
+        });
+        // Additional event listeners for debugging
+        this.client.on('loading_screen', (percent, message) => {
+            log(`EVENT: loading_screen - ${percent}% ${message}`);
+        });
+        this.client.on('change_state', (state) => {
+            log(`EVENT: change_state - ${state}`);
+            if (state === 'CONNECTED' && !this.isReady) {
+                this.isReady = true;
+                this.qrCode = null;
+                log('Client ready (via change_state event)!');
+                this.syncContacts();
+            }
+        });
+        this.client.on('remote_session_saved', () => {
+            log('EVENT: remote_session_saved');
+        });
+        this.client.on('message', async (msg) => {
+            const chatId = msg.from;
+            if (!chatId)
+                return;
+            // Learn about contacts from messages
+            if (!this.contacts.has(chatId)) {
+                const contact = await msg.getContact();
+                const name = contact?.pushname || contact?.name || chatId.split('@')[0];
+                this.contacts.set(chatId, { notify: name });
+                log(`Learned contact from message: ${name}`);
+                this.saveContactsToFile();
+            }
+            // Determine media type
+            let mediaType;
+            if (msg.hasMedia) {
+                const type = msg.type;
+                if (type === 'image')
+                    mediaType = 'image';
+                else if (type === 'video')
+                    mediaType = 'video';
+                else if (type === 'audio')
+                    mediaType = 'audio';
+                else if (type === 'ptt')
+                    mediaType = 'ptt'; // voice message
+                else if (type === 'document')
+                    mediaType = 'document';
+                else if (type === 'sticker')
+                    mediaType = 'sticker';
+                else
+                    mediaType = type;
+            }
+            // Store the message
+            const storedMsg = {
+                id: msg.id._serialized || msg.id.id || '',
+                from: chatId,
+                to: 'me',
+                body: msg.body || (msg.hasMedia ? `[${mediaType || 'Media'}]` : ''),
+                timestamp: msg.timestamp || Math.floor(Date.now() / 1000),
+                fromMe: false,
+                pushName: msg._data?.notifyName || undefined,
+                hasMedia: msg.hasMedia || false,
+                mediaType,
+            };
+            const chatMessages = this.messages.get(chatId) || [];
+            if (!chatMessages.find(m => m.id === storedMsg.id)) {
+                chatMessages.push(storedMsg);
+                if (chatMessages.length > 1000) {
+                    chatMessages.shift();
+                }
+                this.messages.set(chatId, chatMessages);
+            }
+        });
+        this.client.on('message_create', async (msg) => {
+            // Handle outgoing messages
+            if (!msg.fromMe)
+                return;
+            const chatId = msg.to;
+            if (!chatId)
+                return;
+            // Determine media type
+            let mediaType;
+            if (msg.hasMedia) {
+                const type = msg.type;
+                if (type === 'image')
+                    mediaType = 'image';
+                else if (type === 'video')
+                    mediaType = 'video';
+                else if (type === 'audio')
+                    mediaType = 'audio';
+                else if (type === 'ptt')
+                    mediaType = 'ptt';
+                else if (type === 'document')
+                    mediaType = 'document';
+                else if (type === 'sticker')
+                    mediaType = 'sticker';
+                else
+                    mediaType = type;
+            }
+            const storedMsg = {
+                id: msg.id._serialized || msg.id.id || '',
+                from: 'me',
+                to: chatId,
+                body: msg.body || (msg.hasMedia ? `[${mediaType || 'Media'}]` : ''),
+                timestamp: msg.timestamp || Math.floor(Date.now() / 1000),
+                fromMe: true,
+                hasMedia: msg.hasMedia || false,
+                mediaType,
+            };
+            const chatMessages = this.messages.get(chatId) || [];
+            if (!chatMessages.find(m => m.id === storedMsg.id)) {
+                chatMessages.push(storedMsg);
+                if (chatMessages.length > 1000) {
+                    chatMessages.shift();
+                }
+                this.messages.set(chatId, chatMessages);
+            }
+        });
+        // Start the client
+        try {
+            await this.client.initialize();
+        }
+        catch (err) {
+            log('Failed to initialize client:', err);
+            // Start polling fallback for ready state
+            this.startReadyPolling();
+        }
+        // Start polling fallback regardless (in case ready event doesn't fire)
+        this.startReadyPolling();
+    }
+    readyPollingStarted = false;
+    authReceived = false;
+    async checkReadyAfterAuth() {
+        // Prevent multiple calls
+        if (this.authReceived) {
+            log('Auth already received, skipping duplicate');
+            return;
+        }
+        this.authReceived = true;
+        log('Auth received, waiting for ready event...');
+        // Don't actively poll - just wait for the ready event
+        // The ready event should fire after auth is complete
+        // Only set a long timeout fallback
+        setTimeout(async () => {
+            if (!this.isReady) {
+                log('Ready event timeout after 60s, forcing ready...');
+                this.isReady = true;
+                this.qrCode = null;
+                // Wait a bit more before trying to sync
+                await new Promise(resolve => setTimeout(resolve, 5000));
+                await this.syncContacts();
+            }
+        }, 60000);
+    }
+    startReadyPolling() {
+        if (this.readyPollingStarted || this.isReady)
+            return;
+        this.readyPollingStarted = true;
+        log('Starting ready state polling...');
+        let attempts = 0;
+        const maxAttempts = 60; // 5 minutes with 5s intervals
+        const pollInterval = setInterval(async () => {
+            attempts++;
+            if (this.isReady) {
+                log('Ready state confirmed, stopping polling');
+                clearInterval(pollInterval);
+                return;
+            }
+            if (attempts >= maxAttempts) {
+                log('Ready polling timeout reached (5 min)');
+                clearInterval(pollInterval);
+                return;
+            }
+            // Just log status, don't try to force anything
+            if (attempts % 10 === 0) {
+                log(`Waiting for ready... attempt ${attempts}, auth=${this.authReceived}`);
+            }
+            try {
+                if (this.client) {
+                    const state = await this.client.getState();
+                    if (state === 'CONNECTED') {
+                        this.isReady = true;
+                        this.qrCode = null;
+                        log('Client ready (state=CONNECTED)!');
+                        clearInterval(pollInterval);
+                        await this.syncContacts();
+                        return;
+                    }
+                }
+            }
+            catch (err) {
+                // Ignore errors during polling
+            }
+        }, 5000);
+    }
+    async syncContacts() {
+        if (!this.client) {
+            log('syncContacts called but client is null!');
+            return;
+        }
+        try {
+            log('Syncing contacts...');
+            log(`Client exists: ${!!this.client}, isReady: ${this.isReady}`);
+            const contacts = await this.client.getContacts();
+            log(`getContacts() returned ${contacts?.length || 0} items`);
+            let validCount = 0;
+            for (const contact of contacts) {
+                // Filter out invalid contacts
+                if (!contact.id || !contact.id._serialized)
+                    continue;
+                const id = contact.id._serialized;
+                // Skip status broadcast
+                if (id === 'status@broadcast')
+                    continue;
+                this.contacts.set(id, {
+                    name: contact.name || undefined,
+                    notify: contact.pushname || undefined,
+                });
+                validCount++;
+            }
+            log(`Synced ${validCount} contacts from getContacts()`);
+            // Fallback: Also get contacts from chats
+            if (validCount === 0) {
+                log('No contacts from getContacts(), trying getChats()...');
+                try {
+                    const chats = await this.client.getChats();
+                    log(`getChats() returned ${chats?.length || 0} chats`);
+                    for (const chat of chats) {
+                        if (!chat.id || !chat.id._serialized)
+                            continue;
+                        const id = chat.id._serialized;
+                        if (id === 'status@broadcast')
+                            continue;
+                        if (!this.contacts.has(id)) {
+                            this.contacts.set(id, {
+                                name: chat.name || undefined,
+                                notify: chat.name || undefined,
+                            });
+                            validCount++;
+                        }
+                    }
+                    log(`Added ${validCount} contacts from chats`);
+                }
+                catch (chatErr) {
+                    log('getChats() failed:', chatErr);
+                }
+            }
+            this.saveContactsToFile();
+        }
+        catch (err) {
+            log('Failed to sync contacts:', err?.message || err?.name || err);
+            if (err?.stack) {
+                log('Stack:', err.stack.split('\n')[1]);
+            }
+        }
+    }
+    async getStatus() {
+        // Check if browser/puppeteer page is still alive
+        let browserAlive = false;
+        if (this.client && this.isReady) {
+            try {
+                // Try to execute something on the page to verify it's not detached
+                const page = this.client.pupPage;
+                if (page) {
+                    await page.evaluate(() => true);
+                    browserAlive = true;
+                }
+            }
+            catch (err) {
+                log(`Browser health check failed: ${err?.message || err}`);
+                // Browser is dead, mark as not ready
+                this.isReady = false;
+                browserAlive = false;
+            }
+        }
+        return {
+            ready: this.isReady && browserAlive,
+            browserAlive,
+            qrCode: this.qrCode,
+            qrImagePath: this.qrImagePath,
+            contactCount: this.contacts.size,
+        };
+    }
+    async getQRCodeBase64() {
+        if (!this.qrCode)
+            return null;
+        return await generateQRCodeBase64(this.qrCode);
+    }
+    isClientReady() {
+        return this.isReady && this.client !== null;
+    }
+    formatPhoneNumber(phone) {
+        const cleaned = phone.replace(/\D/g, '');
+        if (cleaned.includes('@'))
+            return cleaned;
+        return `${cleaned}@c.us`;
+    }
+    async getChats(limit = 20) {
+        if (!this.client || !this.isReady) {
+            throw new Error('WhatsApp client not ready');
+        }
+        try {
+            const chats = await this.client.getChats();
+            return chats.slice(0, limit).map((chat) => ({
+                id: chat.id._serialized,
+                name: chat.name || chat.id._serialized.split('@')[0],
+                isGroup: chat.isGroup,
+                unreadCount: chat.unreadCount || 0,
+                timestamp: chat.timestamp || Date.now(),
+                lastMessage: chat.lastMessage?.body,
+            }));
+        }
+        catch (err) {
+            log('Failed to get chats:', err);
+            return [];
+        }
+    }
+    async getContacts() {
+        if (!this.client || !this.isReady) {
+            throw new Error('WhatsApp client not ready');
+        }
+        // Refresh contacts if empty
+        if (this.contacts.size === 0) {
+            await this.syncContacts();
+        }
+        const contacts = [];
+        for (const [id, contact] of this.contacts) {
+            contacts.push({
+                id,
+                name: contact.name || '',
+                pushname: contact.notify || '',
+                isMyContact: !!contact.name,
+                isGroup: id.endsWith('@g.us'),
+            });
+        }
+        return contacts;
+    }
+    async findContactByName(name) {
+        // Refresh contacts if empty
+        if (this.contacts.size === 0 && this.client && this.isReady) {
+            await this.syncContacts();
+        }
+        const searchLower = name.toLowerCase();
+        for (const [id, contact] of this.contacts) {
+            const contactName = contact.name?.toLowerCase() || '';
+            const notify = contact.notify?.toLowerCase() || '';
+            if (contactName.includes(searchLower) || notify.includes(searchLower)) {
+                return id;
+            }
+        }
+        return null;
+    }
+    async getMessages(chatId, limit = 100) {
+        if (!this.client || !this.isReady) {
+            throw new Error('WhatsApp client not ready');
+        }
+        // Return cached messages
+        const messages = this.messages.get(chatId) || [];
+        return messages.slice(-limit);
+    }
+    async fetchMessages(chatId, limit = 50) {
+        if (!this.client || !this.isReady) {
+            throw new Error('WhatsApp client not ready');
+        }
+        try {
+            log(`Fetching messages for ${chatId}, limit=${limit}`);
+            const chat = await this.client.getChatById(chatId);
+            log(`Got chat: ${chat?.name || 'unknown'}`);
+            const messages = await chat.fetchMessages({ limit });
+            log(`fetchMessages returned ${messages?.length || 0} messages`);
+            const storedMessages = [];
+            for (const msg of messages) {
+                // Determine media type
+                let mediaType;
+                if (msg.hasMedia) {
+                    const type = msg.type;
+                    if (type === 'image')
+                        mediaType = 'image';
+                    else if (type === 'video')
+                        mediaType = 'video';
+                    else if (type === 'audio')
+                        mediaType = 'audio';
+                    else if (type === 'ptt')
+                        mediaType = 'ptt';
+                    else if (type === 'document')
+                        mediaType = 'document';
+                    else if (type === 'sticker')
+                        mediaType = 'sticker';
+                    else
+                        mediaType = type;
+                }
+                const storedMsg = {
+                    id: msg.id._serialized || msg.id.id || '',
+                    from: msg.fromMe ? 'me' : chatId,
+                    to: msg.fromMe ? chatId : 'me',
+                    body: msg.body || (msg.hasMedia ? `[${mediaType || 'Media'}]` : ''),
+                    timestamp: msg.timestamp || Math.floor(Date.now() / 1000),
+                    fromMe: msg.fromMe,
+                    pushName: msg._data?.notifyName || undefined,
+                    hasMedia: msg.hasMedia || false,
+                    mediaType,
+                };
+                storedMessages.push(storedMsg);
+                // Also update cache
+                const chatMessages = this.messages.get(chatId) || [];
+                if (!chatMessages.find(m => m.id === storedMsg.id)) {
+                    chatMessages.push(storedMsg);
+                }
+                this.messages.set(chatId, chatMessages);
+            }
+            // Sort by timestamp
+            storedMessages.sort((a, b) => a.timestamp - b.timestamp);
+            log(`Fetched ${storedMessages.length} messages for ${chatId}`);
+            return storedMessages;
+        }
+        catch (err) {
+            log(`Failed to fetch messages: ${err?.message || err}`);
+            if (err?.stack) {
+                log('Stack:', err.stack.split('\n').slice(0, 3).join(' | '));
+            }
+            return [];
+        }
+    }
+    async getMessagesByContactName(name, limit = 100) {
+        const contactId = await this.findContactByName(name);
+        if (!contactId) {
+            return null;
+        }
+        // Fetch messages on-demand
+        const fetchedMessages = await this.fetchMessages(contactId, limit);
+        const contact = this.contacts.get(contactId);
+        const contactName = contact?.name || contact?.notify || contactId.split('@')[0];
+        const allMessages = this.messages.get(contactId) || [];
+        // Sort and dedupe
+        allMessages.sort((a, b) => a.timestamp - b.timestamp);
+        return {
+            contactId,
+            contactName,
+            messages: allMessages.slice(-limit),
+            totalStored: allMessages.length,
+        };
+    }
+    async getMessagesByPhoneNumber(phone, limit = 100) {
+        const jid = this.formatPhoneNumber(phone);
+        let chatId = jid;
+        // Search for contact by phone number
+        const cleanedPhone = phone.replace(/\D/g, '');
+        for (const [id] of this.contacts) {
+            if (id.startsWith(cleanedPhone) && id.endsWith('@c.us')) {
+                chatId = id;
+                break;
+            }
+        }
+        // Fetch messages on-demand
+        const fetchedMessages = await this.fetchMessages(chatId, limit);
+        const contact = this.contacts.get(chatId);
+        const contactName = contact?.name || contact?.notify || phone;
+        const allMessages = this.messages.get(chatId) || [];
+        // Sort and dedupe
+        allMessages.sort((a, b) => a.timestamp - b.timestamp);
+        return {
+            contactId: chatId,
+            contactName,
+            messages: allMessages.slice(-limit),
+            totalStored: allMessages.length,
+        };
+    }
+    getRecentMessages(limit = 20) {
+        const result = [];
+        for (const [chatId, messages] of this.messages) {
+            if (messages.length === 0)
+                continue;
+            const contact = this.contacts.get(chatId);
+            const chatName = contact?.name || contact?.notify || chatId.split('@')[0];
+            result.push({
+                chatId,
+                chatName,
+                messages: messages.slice(-5), // Last 5 messages per chat
+            });
+        }
+        // Sort by most recent message
+        result.sort((a, b) => {
+            const aTime = a.messages[a.messages.length - 1]?.timestamp || 0;
+            const bTime = b.messages[b.messages.length - 1]?.timestamp || 0;
+            return bTime - aTime;
+        });
+        return result.slice(0, limit);
+    }
+    async sendMessage(recipient, message) {
+        if (!this.client || !this.isReady) {
+            throw new Error('WhatsApp client not ready');
+        }
+        const jid = this.formatPhoneNumber(recipient);
+        log(`Sending message to ${jid}: "${message.substring(0, 50)}..."`);
+        try {
+            // sendSeen: false fixes "Cannot read properties of undefined (reading 'markedUnread')" error
+            const result = await this.client.sendMessage(jid, message, { sendSeen: false });
+            log(`Message sent successfully, id: ${result?.id?._serialized || 'unknown'}`);
+            return {
+                success: true,
+                messageId: result?.id?._serialized || undefined,
+            };
+        }
+        catch (err) {
+            log(`Failed to send message: ${err?.message || err}`);
+            throw err;
+        }
+    }
+    async sendMessageToContact(name, message) {
+        log(`sendMessageToContact called: name="${name}", message="${message.substring(0, 50)}..."`);
+        if (!this.client || !this.isReady) {
+            log('sendMessageToContact: client not ready');
+            throw new Error('WhatsApp client not ready');
+        }
+        const contactId = await this.findContactByName(name);
+        log(`Found contactId: ${contactId}`);
+        if (!contactId) {
+            throw new Error(`Contact "${name}" not found. Available contacts: ${this.contacts.size}`);
+        }
+        try {
+            log(`Sending message to contact ${contactId}...`);
+            // sendSeen: false fixes "Cannot read properties of undefined (reading 'markedUnread')" error
+            const result = await this.client.sendMessage(contactId, message, { sendSeen: false });
+            log(`Message sent to contact, id: ${result?.id?._serialized || 'unknown'}`);
+            return {
+                success: true,
+                messageId: result?.id?._serialized || undefined,
+                contactId,
+            };
+        }
+        catch (err) {
+            log(`Failed to send to contact: ${err?.message || err}`);
+            if (err?.stack) {
+                log(`Stack: ${err.stack.split('\n').slice(0, 2).join(' | ')}`);
+            }
+            throw err;
+        }
+    }
+    async searchMessages(query, chatId, limit = 50) {
+        if (!this.client || !this.isReady) {
+            throw new Error('WhatsApp client not ready');
+        }
+        const results = [];
+        const searchLower = query.toLowerCase();
+        if (chatId) {
+            // Search in specific chat
+            const messages = this.messages.get(chatId) || [];
+            const matches = messages.filter(m => m.body.toLowerCase().includes(searchLower));
+            if (matches.length > 0) {
+                const contact = this.contacts.get(chatId);
+                results.push({
+                    chatId,
+                    chatName: contact?.name || contact?.notify || chatId.split('@')[0],
+                    messages: matches.slice(-limit),
+                });
+            }
+        }
+        else {
+            // Search in all chats
+            for (const [cId, messages] of this.messages) {
+                const matches = messages.filter(m => m.body.toLowerCase().includes(searchLower));
+                if (matches.length > 0) {
+                    const contact = this.contacts.get(cId);
+                    results.push({
+                        chatId: cId,
+                        chatName: contact?.name || contact?.notify || cId.split('@')[0],
+                        messages: matches.slice(-Math.floor(limit / Math.max(results.length + 1, 1))),
+                    });
+                }
+            }
+        }
+        return results.slice(0, 20); // Max 20 chats
+    }
+    async downloadMedia(messageId, chatId) {
+        if (!this.client || !this.isReady) {
+            throw new Error('WhatsApp client not ready');
+        }
+        try {
+            log(`Downloading media for message ${messageId} in chat ${chatId}`);
+            const chat = await this.client.getChatById(chatId);
+            const messages = await chat.fetchMessages({ limit: 100 });
+            const msg = messages.find((m) => (m.id._serialized === messageId || m.id.id === messageId));
+            if (!msg) {
+                log(`Message ${messageId} not found in chat`);
+                return null;
+            }
+            if (!msg.hasMedia) {
+                log(`Message ${messageId} has no media`);
+                return null;
+            }
+            const media = await msg.downloadMedia();
+            if (!media) {
+                log(`Failed to download media for message ${messageId}`);
+                return null;
+            }
+            log(`Downloaded media: ${media.mimetype}, ${media.data.length} bytes`);
+            return {
+                data: media.data,
+                mimetype: media.mimetype,
+                filename: media.filename || undefined,
+            };
+        }
+        catch (err) {
+            log(`Error downloading media: ${err?.message || err}`);
+            throw err;
+        }
+    }
+    async sendImage(recipient, imageData, caption, isUrl = false) {
+        if (!this.client || !this.isReady) {
+            throw new Error('WhatsApp client not ready');
+        }
+        const jid = this.formatPhoneNumber(recipient);
+        log(`Sending image to ${jid}, caption: ${caption?.substring(0, 30) || 'none'}`);
+        try {
+            const MessageMedia = (await import('whatsapp-web.js')).default.MessageMedia;
+            let media;
+            if (isUrl) {
+                // Download from URL
+                media = await MessageMedia.fromUrl(imageData, { unsafeMime: true });
+            }
+            else {
+                // Base64 data
+                media = new MessageMedia('image/jpeg', imageData);
+            }
+            const result = await this.client.sendMessage(jid, media, {
+                sendSeen: false,
+                caption: caption || undefined,
+            });
+            log(`Image sent successfully, id: ${result?.id?._serialized || 'unknown'}`);
+            return {
+                success: true,
+                messageId: result?.id?._serialized || undefined,
+            };
+        }
+        catch (err) {
+            log(`Failed to send image: ${err?.message || err}`);
+            throw err;
+        }
+    }
+    async sendDocument(recipient, documentData, filename, isUrl = false) {
+        if (!this.client || !this.isReady) {
+            throw new Error('WhatsApp client not ready');
+        }
+        const jid = this.formatPhoneNumber(recipient);
+        log(`Sending document to ${jid}, filename: ${filename || 'unknown'}`);
+        try {
+            const MessageMedia = (await import('whatsapp-web.js')).default.MessageMedia;
+            let media;
+            if (isUrl) {
+                media = await MessageMedia.fromUrl(documentData, { unsafeMime: true });
+            }
+            else {
+                // Try to detect mimetype from filename or use default
+                const mimetype = filename?.endsWith('.pdf') ? 'application/pdf'
+                    : filename?.endsWith('.docx') ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+                        : 'application/octet-stream';
+                media = new MessageMedia(mimetype, documentData, filename);
+            }
+            const result = await this.client.sendMessage(jid, media, {
+                sendSeen: false,
+            });
+            log(`Document sent successfully, id: ${result?.id?._serialized || 'unknown'}`);
+            return {
+                success: true,
+                messageId: result?.id?._serialized || undefined,
+            };
+        }
+        catch (err) {
+            log(`Failed to send document: ${err?.message || err}`);
+            throw err;
+        }
+    }
+    async getAudioMessages(chatId, limit = 50) {
+        if (!this.client || !this.isReady) {
+            throw new Error('WhatsApp client not ready');
+        }
+        // First fetch messages to ensure we have recent ones
+        await this.fetchMessages(chatId, limit);
+        // Filter for audio messages
+        const allMessages = this.messages.get(chatId) || [];
+        return allMessages.filter(m => m.hasMedia && (m.mediaType === 'audio' || m.mediaType === 'ptt')).slice(-limit);
+    }
+    async react(messageId, chatId, emoji) {
+        if (!this.client || !this.isReady) {
+            throw new Error('WhatsApp client not ready');
+        }
+        try {
+            log(`Reacting to message ${messageId} in ${chatId} with ${emoji}`);
+            const chat = await this.client.getChatById(chatId);
+            const messages = await chat.fetchMessages({ limit: 100 });
+            const msg = messages.find((m) => m.id._serialized === messageId || m.id.id === messageId);
+            if (!msg) {
+                throw new Error(`Message ${messageId} not found in chat`);
+            }
+            await msg.react(emoji);
+            log(`Reacted with ${emoji} successfully`);
+            return { success: true };
+        }
+        catch (err) {
+            log(`Failed to react: ${err?.message || err}`);
+            throw err;
+        }
+    }
+    async replyToMessage(chatId, messageId, message) {
+        if (!this.client || !this.isReady) {
+            throw new Error('WhatsApp client not ready');
+        }
+        try {
+            log(`Replying to message ${messageId} in ${chatId}`);
+            const result = await this.client.sendMessage(chatId, message, {
+                quotedMessageId: messageId,
+                sendSeen: false,
+            });
+            log(`Reply sent, id: ${result?.id?._serialized || 'unknown'}`);
+            return {
+                success: true,
+                messageId: result?.id?._serialized || undefined,
+            };
+        }
+        catch (err) {
+            log(`Failed to reply: ${err?.message || err}`);
+            throw err;
+        }
+    }
+    async deleteMessage(messageId, chatId, forEveryone = true) {
+        if (!this.client || !this.isReady) {
+            throw new Error('WhatsApp client not ready');
+        }
+        try {
+            log(`Deleting message ${messageId} in ${chatId}, forEveryone=${forEveryone}`);
+            const chat = await this.client.getChatById(chatId);
+            const messages = await chat.fetchMessages({ limit: 100 });
+            const msg = messages.find((m) => m.id._serialized === messageId || m.id.id === messageId);
+            if (!msg) {
+                throw new Error(`Message ${messageId} not found in chat`);
+            }
+            await msg.delete(forEveryone);
+            log(`Message deleted successfully`);
+            return { success: true };
+        }
+        catch (err) {
+            log(`Failed to delete message: ${err?.message || err}`);
+            throw err;
+        }
+    }
+    async editMessage(messageId, chatId, newText) {
+        if (!this.client || !this.isReady) {
+            throw new Error('WhatsApp client not ready');
+        }
+        try {
+            log(`Editing message ${messageId} in ${chatId}`);
+            const chat = await this.client.getChatById(chatId);
+            const messages = await chat.fetchMessages({ limit: 100 });
+            const msg = messages.find((m) => m.id._serialized === messageId || m.id.id === messageId);
+            if (!msg) {
+                throw new Error(`Message ${messageId} not found in chat`);
+            }
+            await msg.edit(newText);
+            log(`Message edited successfully`);
+            return { success: true };
+        }
+        catch (err) {
+            log(`Failed to edit message: ${err?.message || err}`);
+            throw err;
+        }
+    }
+    async setTypingState(chatId, action) {
+        if (!this.client || !this.isReady) {
+            throw new Error('WhatsApp client not ready');
+        }
+        try {
+            log(`Setting typing state for ${chatId}: ${action}`);
+            const chat = await this.client.getChatById(chatId);
+            if (action === 'typing') {
+                await chat.sendStateTyping();
+            }
+            else if (action === 'recording') {
+                await chat.sendStateRecording();
+            }
+            else {
+                await chat.clearState();
+            }
+            log(`Typing state set to ${action}`);
+            return { success: true };
+        }
+        catch (err) {
+            log(`Failed to set typing state: ${err?.message || err}`);
+            throw err;
+        }
+    }
+    async listGroups(limit = 20) {
+        if (!this.client || !this.isReady) {
+            throw new Error('WhatsApp client not ready');
+        }
+        try {
+            log(`Listing groups, limit=${limit}`);
+            const chats = await this.client.getChats();
+            const groups = chats
+                .filter((chat) => chat.isGroup)
+                .slice(0, limit)
+                .map((chat) => ({
+                id: chat.id._serialized,
+                name: chat.name || chat.id._serialized.split('@')[0],
+                isGroup: chat.isGroup,
+                unreadCount: chat.unreadCount || 0,
+                timestamp: chat.timestamp || Date.now(),
+                lastMessage: chat.lastMessage?.body,
+            }));
+            log(`Found ${groups.length} groups`);
+            return groups;
+        }
+        catch (err) {
+            log(`Failed to list groups: ${err?.message || err}`);
+            throw err;
+        }
+    }
+    async getGroupInfo(chatId) {
+        if (!this.client || !this.isReady) {
+            throw new Error('WhatsApp client not ready');
+        }
+        try {
+            log(`Getting group info for ${chatId}`);
+            const chat = await this.client.getChatById(chatId);
+            const group = chat;
+            const info = {
+                id: group.id._serialized,
+                name: group.name,
+                description: group.description,
+                participants: (group.participants || []).map((p) => ({
+                    id: p.id._serialized,
+                    isAdmin: p.isAdmin,
+                    isSuperAdmin: p.isSuperAdmin,
+                })),
+                createdAt: group.createdAt,
+                owner: group.owner?._serialized,
+            };
+            log(`Got group info: ${info.name}, ${info.participants.length} participants`);
+            return info;
+        }
+        catch (err) {
+            log(`Failed to get group info: ${err?.message || err}`);
+            throw err;
+        }
+    }
+    async createGroup(name, participants) {
+        if (!this.client || !this.isReady) {
+            throw new Error('WhatsApp client not ready');
+        }
+        try {
+            log(`Creating group "${name}" with ${participants.length} participants`);
+            const result = await this.client.createGroup(name, participants);
+            const groupId = result.gid._serialized;
+            log(`Group created: ${groupId}`);
+            return { groupId };
+        }
+        catch (err) {
+            log(`Failed to create group: ${err?.message || err}`);
+            throw err;
+        }
+    }
+    async addGroupParticipants(chatId, participants) {
+        if (!this.client || !this.isReady) {
+            throw new Error('WhatsApp client not ready');
+        }
+        try {
+            log(`Adding ${participants.length} participants to ${chatId}`);
+            const chat = await this.client.getChatById(chatId);
+            await chat.addParticipants(participants);
+            log(`Participants added to ${chatId}`);
+            return { success: true };
+        }
+        catch (err) {
+            log(`Failed to add participants: ${err?.message || err}`);
+            throw err;
+        }
+    }
+    async removeGroupParticipants(chatId, participants) {
+        if (!this.client || !this.isReady) {
+            throw new Error('WhatsApp client not ready');
+        }
+        try {
+            log(`Removing ${participants.length} participants from ${chatId}`);
+            const chat = await this.client.getChatById(chatId);
+            await chat.removeParticipants(participants);
+            log(`Participants removed from ${chatId}`);
+            return { success: true };
+        }
+        catch (err) {
+            log(`Failed to remove participants: ${err?.message || err}`);
+            throw err;
+        }
+    }
+    async setGroupSubject(chatId, subject) {
+        if (!this.client || !this.isReady) {
+            throw new Error('WhatsApp client not ready');
+        }
+        try {
+            log(`Setting group subject for ${chatId}: "${subject}"`);
+            const chat = await this.client.getChatById(chatId);
+            await chat.setSubject(subject);
+            log(`Group subject updated for ${chatId}`);
+            return { success: true };
+        }
+        catch (err) {
+            log(`Failed to set group subject: ${err?.message || err}`);
+            throw err;
+        }
+    }
+    async setGroupDescription(chatId, description) {
+        if (!this.client || !this.isReady) {
+            throw new Error('WhatsApp client not ready');
+        }
+        try {
+            log(`Setting group description for ${chatId}`);
+            const chat = await this.client.getChatById(chatId);
+            await chat.setDescription(description);
+            log(`Group description updated for ${chatId}`);
+            return { success: true };
+        }
+        catch (err) {
+            log(`Failed to set group description: ${err?.message || err}`);
+            throw err;
+        }
+    }
+    async leaveGroup(chatId) {
+        if (!this.client || !this.isReady) {
+            throw new Error('WhatsApp client not ready');
+        }
+        try {
+            log(`Leaving group ${chatId}`);
+            const chat = await this.client.getChatById(chatId);
+            await chat.leave();
+            log(`Left group ${chatId}`);
+            return { success: true };
+        }
+        catch (err) {
+            log(`Failed to leave group: ${err?.message || err}`);
+            throw err;
+        }
+    }
+    async getGroupInviteLink(chatId) {
+        if (!this.client || !this.isReady) {
+            throw new Error('WhatsApp client not ready');
+        }
+        try {
+            log(`Getting invite link for ${chatId}`);
+            const chat = await this.client.getChatById(chatId);
+            const code = await chat.getInviteCode();
+            const inviteLink = `https://chat.whatsapp.com/${code}`;
+            log(`Got invite link for ${chatId}`);
+            return { inviteLink };
+        }
+        catch (err) {
+            log(`Failed to get invite link: ${err?.message || err}`);
+            throw err;
+        }
+    }
+    async destroy() {
+        if (this.client) {
+            try {
+                await this.client.destroy();
+            }
+            catch (err) {
+                log('Error destroying client:', err);
+            }
+            this.client = null;
+            this.isReady = false;
+        }
+    }
+    async reconnect() {
+        log('Reconnecting WhatsApp client...');
+        // Kill any hanging browser processes first
+        try {
+            const { exec } = await import('child_process');
+            await new Promise((resolve) => {
+                exec('pkill -f "Google Chrome for Testing" 2>/dev/null || true', () => resolve());
+            });
+            log('Killed any hanging Chrome processes');
+        }
+        catch (err) {
+            // Ignore errors
+        }
+        // Destroy current client (keeps auth data)
+        if (this.client) {
+            try {
+                await this.client.destroy();
+            }
+            catch (err) {
+                log('Error destroying client during reconnect:', err);
+            }
+            this.client = null;
+        }
+        // Reset state but keep contacts cache
+        this.isReady = false;
+        this.readyPollingStarted = false;
+        this.authReceived = false;
+        this.qrCode = null;
+        // Wait a moment for cleanup
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        // Reinitialize
+        try {
+            await this.initialize();
+            // Wait for ready state (max 30 seconds)
+            const startTime = Date.now();
+            while (!this.isReady && Date.now() - startTime < 30000) {
+                await new Promise(resolve => setTimeout(resolve, 1000));
+            }
+            if (this.isReady) {
+                return { success: true, message: 'Reconnected successfully!' };
+            }
+            else if (this.qrCode) {
+                return { success: false, message: 'QR code scan required. Use whatsapp_get_qr_code.' };
+            }
+            else {
+                return { success: false, message: 'Reconnect timed out. Try whatsapp_reset_auth.' };
+            }
+        }
+        catch (err) {
+            log('Reconnect failed:', err?.message || err);
+            return { success: false, message: `Reconnect failed: ${err?.message || 'Unknown error'}` };
+        }
+    }
+    async requestHistorySync() {
+        // In whatsapp-web.js, we use fetchMessages instead
+        log('History sync requested. Use fetchMessages for on-demand loading.');
+    }
+    async fetchMoreMessages(chatId, count = 50) {
+        if (!this.client || !this.isReady) {
+            throw new Error('WhatsApp client not ready');
+        }
+        const beforeCount = this.messages.get(chatId)?.length || 0;
+        log(`Fetching more messages for ${chatId}, current count: ${beforeCount}`);
+        try {
+            const chat = await this.client.getChatById(chatId);
+            // Call syncHistory multiple times to load more older messages from phone
+            log('Calling syncHistory to load older messages from phone...');
+            for (let i = 0; i < 3; i++) {
+                try {
+                    const result = await chat.syncHistory();
+                    log(`syncHistory attempt ${i + 1}: ${result}`);
+                    // Wait for messages to be loaded
+                    await new Promise(resolve => setTimeout(resolve, 1500));
+                }
+                catch (syncErr) {
+                    log(`syncHistory attempt ${i + 1} error: ${syncErr?.message || syncErr}`);
+                    break; // Stop if error
+                }
+            }
+            // Now fetch messages with higher limit
+            const newLimit = Math.max(beforeCount + count, 100);
+            log(`Fetching with limit=${newLimit}`);
+            const messages = await chat.fetchMessages({ limit: newLimit });
+            log(`fetchMessages returned ${messages?.length || 0} messages`);
+            let newCount = 0;
+            for (const msg of messages) {
+                // Determine media type
+                let mediaType;
+                if (msg.hasMedia) {
+                    const type = msg.type;
+                    if (type === 'image')
+                        mediaType = 'image';
+                    else if (type === 'video')
+                        mediaType = 'video';
+                    else if (type === 'audio')
+                        mediaType = 'audio';
+                    else if (type === 'ptt')
+                        mediaType = 'ptt';
+                    else if (type === 'document')
+                        mediaType = 'document';
+                    else if (type === 'sticker')
+                        mediaType = 'sticker';
+                    else
+                        mediaType = type;
+                }
+                const storedMsg = {
+                    id: msg.id._serialized || msg.id.id || '',
+                    from: msg.fromMe ? 'me' : chatId,
+                    to: msg.fromMe ? chatId : 'me',
+                    body: msg.body || (msg.hasMedia ? `[${mediaType || 'Media'}]` : ''),
+                    timestamp: msg.timestamp || Math.floor(Date.now() / 1000),
+                    fromMe: msg.fromMe,
+                    pushName: msg._data?.notifyName || undefined,
+                    hasMedia: msg.hasMedia || false,
+                    mediaType,
+                };
+                const chatMessages = this.messages.get(chatId) || [];
+                if (!chatMessages.find(m => m.id === storedMsg.id)) {
+                    chatMessages.push(storedMsg);
+                    newCount++;
+                }
+                this.messages.set(chatId, chatMessages);
+            }
+            // Sort by timestamp
+            const allMessages = this.messages.get(chatId) || [];
+            allMessages.sort((a, b) => a.timestamp - b.timestamp);
+            this.messages.set(chatId, allMessages);
+            const afterCount = allMessages.length;
+            log(`Fetched ${newCount} new messages, total now: ${afterCount}`);
+            return {
+                fetched: newCount > 0,
+                messageCount: afterCount,
+                newMessages: newCount,
+            };
+        }
+        catch (err) {
+            log(`Failed to fetch more messages: ${err?.message || err}`);
+            return { fetched: false, messageCount: beforeCount, newMessages: 0 };
+        }
+    }
+    async resetAuth() {
+        // Destroy current connection
+        await this.destroy();
+        // Clear contacts and messages
+        this.contacts.clear();
+        this.messages.clear();
+        this.readyPollingStarted = false;
+        this.qrCode = null;
+        // Delete auth folder
+        const fs = await import('fs/promises');
+        try {
+            await fs.rm(AUTH_FOLDER, { recursive: true, force: true });
+            log('Auth folder deleted');
+        }
+        catch (err) {
+            log('Failed to delete auth folder:', err);
+        }
+        // Delete contacts cache
+        try {
+            await fs.unlink(CONTACTS_FILE);
+            log('Contacts cache deleted');
+        }
+        catch (err) {
+            // Ignore if doesn't exist
+        }
+        // Reinitialize
+        log('Reinitializing WhatsApp client...');
+        await this.initialize();
+    }
+}
+export const whatsappClient = new WhatsAppClientWrapper();

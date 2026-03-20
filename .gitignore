@@ -2,8 +2,8 @@
 node_modules/
 
 # Build output
-build/
 dist/
+# build/ is committed for npx github: support
 
 # WhatsApp session data (contains auth tokens)
 .wwebjs_auth/
